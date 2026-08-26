@@ -110,7 +110,9 @@ const CONFIG = {
 
   PENALTY: {
     kicksEach: 5,
-    thirds: ['top', 'centre', 'bottom'],
+    thirds: ['top', 'centre', 'bottom'],   // what 1, 2 and 3 mean, in order
+    pickKeys: ['ONE', 'TWO', 'THREE'],
+    padKeys: ['NUMPAD_ONE', 'NUMPAD_TWO', 'NUMPAD_THREE'],
     botDelayMinMs: 700,
     botDelayMaxMs: 1400,
     kickAnimMs: 520,
@@ -128,14 +130,21 @@ const CONFIG = {
       skiedOffsetX: 96,
       skiedOffsetY: 128,     // over the bar
     },
-    /* Separate table. The taker's intent barely matters, which is the point. */
+    /*
+     * Separate table. The taker's intent barely matters, which is the point.
+     *
+     * The taker picks a third, the keeper dives to a third chosen independently, so an
+     * on-target kick beats an active keeper 2 times in 3 and a frozen one every time.
+     * Weighted so the whole thing converts at roughly a third: clean and wrongNumber
+     * are the only ways to be on target, and fumble only scores past a frozen keeper.
+     */
     TABLE: [
-      { key: 'clean',     weight: 30 },
-      { key: 'swapped',   weight: 25 },
-      { key: 'skied',     weight: 15 },
-      { key: 'fumble',    weight: 15 },
-      { key: 'slice',     weight: 10 },
-      { key: 'faceplant', weight: 5 },
+      { key: 'clean',       weight: 26 },   // goes exactly where you asked
+      { key: 'wrongNumber', weight: 15 },   // on target, just not the third you picked
+      { key: 'skied',       weight: 20 },
+      { key: 'fumble',      weight: 15 },
+      { key: 'slice',       weight: 19 },
+      { key: 'faceplant',   weight: 5 },
     ],
   },
 
@@ -900,7 +909,10 @@ class PenaltyScene extends Phaser.Scene {
     this.geom = CONFIG.PENALTY.GEOM;
     this.view = Renderer.createPenaltyView(this, this.geom);
 
-    this.keys = { red: keysFor(this, 'red'), blue: keysFor(this, 'blue') };
+    // Both takers use the same 1/2/3, which is unambiguous because only the taker ever
+    // has the ball. Numpad equivalents accepted.
+    this.pickKeys = this.input.keyboard.addKeys(
+      CONFIG.PENALTY.pickKeys.concat(CONFIG.PENALTY.padKeys).join(','));
 
     this.keeper = { frozen: false, frozenUntil: 0, nextFreezeAt: 0, sprite: this.view.keeper };
     scheduleKeeperFreeze(this.keeper, this.time.now);
@@ -941,16 +953,17 @@ class PenaltyScene extends Phaser.Scene {
 
     if (this.phase === 'await') {
       if (this.isHumanTurn()) {
-        const map = CONFIG.CONTROLS[this.turn];
-        const keys = this.keys[this.turn];
         const JustDown = Phaser.Input.Keyboard.JustDown;
-        const pass = JustDown(keys[map.pass]);
-        const shoot = JustDown(keys[map.shoot]);
-        if (pass) this.takePenalty('pass');
-        else if (shoot) this.takePenalty('shoot');
+        for (let i = 0; i < CONFIG.PENALTY.pickKeys.length; i++) {
+          if (JustDown(this.pickKeys[CONFIG.PENALTY.pickKeys[i]])
+            || JustDown(this.pickKeys[CONFIG.PENALTY.padKeys[i]])) {
+            this.takePenalty(i);
+            break;
+          }
+        }
       } else if (time >= this.botKickAt) {
-        // The bot picks at random and rolls the same table as everyone else.
-        this.takePenalty(Math.random() < 0.5 ? 'pass' : 'shoot');
+        // The bot picks a third at random and rolls the same table as everyone else.
+        this.takePenalty(Phaser.Math.Between(0, CONFIG.PENALTY.thirds.length - 1));
       }
     } else if (this.phase === 'result' && time >= this.resultUntil) {
       this.advance();
@@ -961,26 +974,33 @@ class PenaltyScene extends Phaser.Scene {
    * Decides the result first, then hands the renderer a plan to animate. Whether the
    * kick scored is settled here and nowhere else.
    */
-  takePenalty(intent) {
+  /* pick is the index of the third the taker chose: 0, 1 or 2 for keys 1, 2 and 3. */
+  takePenalty(pick) {
     this.phase = 'kicking';
 
     const G = this.geom;
+    const thirds = CONFIG.PENALTY.thirds;
     const outcome = rollOutcome(CONFIG.PENALTY.TABLE);
     const frozen = this.keeper.frozen;
-    // The keeper picks a third at the moment of the kick, independently of the shot.
-    const dive = Phaser.Utils.Array.GetRandom(CONFIG.PENALTY.thirds);
+    // The keeper picks a third at the moment of the kick, independently of the taker.
+    const dive = Phaser.Utils.Array.GetRandom(thirds);
+    const aimed = thirds[pick];
 
-    const plan = { outcome, keeperFrozen: frozen, keeperY: G.thirdY[dive], slow: false };
+    const plan = { outcome, keeperFrozen: frozen, keeperY: G.thirdY[dive], slow: false,
+                   aimed, dive };
     let scored = false;
 
-    const strike = () => {
-      const third = Phaser.Utils.Array.GetRandom(CONFIG.PENALTY.thirds);
-      // A frozen keeper cannot dive, so a clean strike always beats it.
+    /* On target for the given third: beaten only if the keeper happens to be there. */
+    const strike = (third) => {
+      // A frozen keeper cannot dive, so an on-target kick always beats it.
       scored = frozen || dive !== third;
       plan.ballY = G.thirdY[scored ? third : dive];
       plan.ballX = scored ? G.goalLineX + G.behindLineX
         : G.goalLineX - CONFIG.KEEPER.lineInset - G.keeperGapX;
     };
+
+    /* Same power and placement, just not the third that was asked for. */
+    const otherThird = () => Phaser.Utils.Array.GetRandom(thirds.filter((t) => t !== aimed));
 
     const wide = (slow) => {
       scored = false;
@@ -991,13 +1011,12 @@ class PenaltyScene extends Phaser.Scene {
 
     switch (outcome) {
       case 'clean':
-        strike();
+        strike(aimed);
         break;
 
-      case 'swapped':
-        // Pass becomes a proper shot. Shoot becomes a limp pass that dribbles wide.
-        if (intent === 'pass') strike();
-        else wide(true);
+      case 'wrongNumber':
+        // Struck just as well, but the legs picked a different corner.
+        strike(otherThird());
         break;
 
       case 'skied':

@@ -70,7 +70,7 @@ const Renderer = {
 
   PENALTY_LABELS: {
     clean: 'CLEAN STRIKE',
-    swapped: 'WRONG FOOT!',
+    wrongNumber: 'WRONG CORNER!',
     skied: 'OVER THE BAR!',
     fumble: 'FUMBLED IT!',
     slice: 'WIDE!',
@@ -431,6 +431,12 @@ const Renderer = {
 
     Renderer.centred(scene, 40, 'PENALTY SHOOTOUT', 44);
 
+    // Number the thirds, otherwise 1/2/3 is a guess rather than a choice.
+    CONFIG.PENALTY.thirds.forEach((third, i) => {
+      Renderer.text(scene, geom.goalLineX + geom.goalDepth / 2, geom.thirdY[third],
+        String(i + 1), 30, C.accent).setOrigin(0.5).setDepth(Renderer.DEPTH.pitch + 1);
+    });
+
     const taker = scene.add.image(geom.spotX - 54, geom.spotY, 'player_red')
       .setDepth(Renderer.DEPTH.player);
     taker.setOrigin(CONFIG.PLAYER.radius / taker.width, 0.5);
@@ -471,9 +477,7 @@ const Renderer = {
       view.prompt.setText(Renderer.TEAM_NAME[team] + ' is stepping up...');
       return;
     }
-    const keys = CONFIG.CONTROLS[team];
-    view.prompt.setText(Renderer.TEAM_NAME[team] + ': press '
-      + Renderer.keyLabel(keys.pass) + ' or ' + Renderer.keyLabel(keys.shoot));
+    view.prompt.setText(Renderer.TEAM_NAME[team] + ': pick a corner, 1  2  or  3');
   },
 
   setPenaltyResult(view, outcomeKey, scored) {
