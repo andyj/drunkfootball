@@ -269,6 +269,8 @@ class GameScene extends Phaser.Scene {
       paused: false,
       owner: null,
       recaptureLockUntil: 0,
+      kickoffTeam: null,      // who takes the next kickoff, and starts with the ball
+      kickoffIsToss: false,   // true only for the coin toss that opens the match
     };
 
     this.walls = this.buildWalls();
@@ -310,6 +312,9 @@ class GameScene extends Phaser.Scene {
     };
 
     this.pauseView = null;
+    // Who starts with the ball is a coin toss, fresh for every match.
+    this.state.kickoffTeam = Math.random() < 0.5 ? 'red' : 'blue';
+    this.state.kickoffIsToss = true;
     this.startKickoff(this.time.now);
     Renderer.updateHUD(this.hud, this.state.scores, this.state.timeLeft);
   }
@@ -716,6 +721,9 @@ class GameScene extends Phaser.Scene {
 
   scoreGoal(team, now) {
     this.state.scores[team] += 1;
+    // The side that conceded restarts with the ball.
+    this.state.kickoffTeam = team === 'red' ? 'blue' : 'red';
+    this.state.kickoffIsToss = false;
     this.state.phase = 'goal';
     this.state.phaseUntil = now + CONFIG.MATCH.goalPauseMs;
     this.setOwner(null);
@@ -729,6 +737,7 @@ class GameScene extends Phaser.Scene {
     this.state.phase = 'kickoff';
     this.state.countLeft = CONFIG.MATCH.kickoffCount;
     this.state.nextCountAt = now;
+    Renderer.onKickoff(this, this.state.kickoffTeam, this.state.kickoffIsToss);
   }
 
   updateCountdown(now) {
@@ -741,24 +750,36 @@ class GameScene extends Phaser.Scene {
 
   resetPositions() {
     const P = CONFIG.PITCH;
-    this.red.sprite.body.reset(P.centreX - CONFIG.PLAYER.kickoffOffset, P.centreY);
+
+    // Kickoff facing is always toward the opponent's goal.
     this.red.facing = 0;
-    this.blue.sprite.body.reset(P.centreX + CONFIG.PLAYER.kickoffOffset, P.centreY);
     this.blue.facing = Math.PI;
+
+    // The side kicking off stands on the centre spot so the ball is already at its
+    // feet. The other side waits at its fixed position in its own half.
+    const kicking = this.state.kickoffTeam === 'blue' ? this.blue : this.red;
+    const waiting = kicking === this.red ? this.blue : this.red;
+    kicking.sprite.body.reset(
+      P.centreX - Math.cos(kicking.facing) * CONFIG.BALL.carryDistance, P.centreY);
+    waiting.sprite.body.reset(
+      P.centreX + (waiting === this.red ? -1 : 1) * CONFIG.PLAYER.kickoffOffset, P.centreY);
+
     this.players.forEach((p) => {
       p.stunnedUntil = 0;
       p.input = makeInput();
       Renderer.onFacingChanged(this, p);
     });
+
     this.ball.body.reset(P.centreX, P.centreY);
     this.keepers.forEach((k) => k.sprite.body.reset(k.homeX, P.centreY));
     if (this.bot) {
       this.bot.queuedKick = null;
+      this.bot.nextDecisionAt = 0;
       this.bot.targetX = this.blue.sprite.x;
       this.bot.targetY = this.blue.sprite.y;
     }
-    this.setOwner(null);
     this.state.recaptureLockUntil = 0;
+    this.setOwner(kicking);
   }
 
   togglePause() {

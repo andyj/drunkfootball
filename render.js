@@ -316,8 +316,25 @@ const Renderer = {
     });
   },
 
+  /* Announced once as the kickoff is set up, so it is clear who has the ball. */
+  onKickoff(scene, team, isCoinToss) {
+    const hold = CONFIG.MATCH.kickoffStepMs * (CONFIG.MATCH.kickoffCount + 1);
+    const label = Renderer.centred(scene, CONFIG.CANVAS.height / 2 - 96,
+      (isCoinToss ? 'COIN TOSS  —  ' : '') + Renderer.TEAM_NAME[team] + ' BALL', 36,
+      team === 'red' ? Renderer.CSS.red : Renderer.CSS.blue);
+    scene.tweens.add({
+      targets: label,
+      alpha: 0,
+      duration: hold,
+      ease: 'Quad.easeIn',
+      onComplete: () => label.destroy(),
+    });
+  },
+
+  /* Drawn below the centre spot: the side kicking off now stands on the spot with the
+   * ball at its feet, so the count must not sit on top of them. */
   onKickoffCount(scene, n) {
-    const label = Renderer.centred(scene, CONFIG.CANVAS.height / 2,
+    const label = Renderer.centred(scene, CONFIG.CANVAS.height / 2 + 130,
       n > 0 ? String(n) : 'GO!', n > 0 ? 88 : 64);
     scene.tweens.add({
       targets: label,
