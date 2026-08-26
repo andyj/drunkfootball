@@ -40,6 +40,7 @@ const CONFIG = {
     maxSpeed: 1100,
     captureRadius: 28,
     carryDistance: 24,
+    carryStepPx: 4,      // granularity when pulling a carried ball back out of a keeper
     kickLockMs: 250,     // stops the kicker instantly recapturing their own fumble
     tackleLockMs: 400,   // spec: no recapture for 400ms after a tackle
     tackleImpulseMin: 90,
@@ -297,6 +298,9 @@ class GameScene extends Phaser.Scene {
       this.physics.add.collider(this.ball, keeper.sprite, (ball) => {
         Renderer.onKeeperSave(this, keeper, ball.body.speed);
       });
+      // Keepers are solid to players as well as to the ball. Without this a dribbler
+      // walks its body straight through the keeper and takes the ball with it.
+      this.players.forEach((p) => this.physics.add.collider(p.sprite, keeper.sprite));
     });
 
     this.keys = { red: keysFor(this, 'red'), blue: keysFor(this, 'blue') };
@@ -572,7 +576,6 @@ class GameScene extends Phaser.Scene {
   }
 
   updatePossession(now) {
-    const P = CONFIG.PITCH;
     const ball = this.ball;
     const owner = this.state.owner;
 
@@ -589,14 +592,10 @@ class GameScene extends Phaser.Scene {
     }
 
     if (this.state.owner) {
-      // Ball rides just ahead of the dribbler's facing, clamped to stay on the pitch.
-      const o = this.state.owner;
-      const r = CONFIG.BALL.radius;
-      const x = Phaser.Math.Clamp(
-        o.sprite.x + Math.cos(o.facing) * CONFIG.BALL.carryDistance, P.left + r, P.right - r);
-      const y = Phaser.Math.Clamp(
-        o.sprite.y + Math.sin(o.facing) * CONFIG.BALL.carryDistance, P.top + r, P.bottom - r);
-      ball.body.reset(x, y);
+      // Ball rides just ahead of the dribbler's facing, clamped to stay on the pitch and
+      // pulled back out of a keeper if one is in the way.
+      const point = this.carryPoint(this.state.owner);
+      ball.body.reset(point.x, point.y);
       return;
     }
 
@@ -610,6 +609,46 @@ class GameScene extends Phaser.Scene {
         return;
       }
     }
+  }
+
+  /*
+   * Where the dribbled ball sits this frame.
+   *
+   * The carry is a teleport, not a physics move, so it would happily place the ball
+   * inside a keeper and from there a kick starts already past the only thing guarding
+   * the goal. Keepers are solid, so pull the ball back along the carry line until it
+   * is clear of them, right back to the dribbler's feet if that is what it takes.
+   */
+  carryPoint(owner) {
+    const step = CONFIG.BALL.carryStepPx;
+    let point = this.carryPointAt(owner, CONFIG.BALL.carryDistance);
+    if (!this.overlapsKeeper(point)) return point;
+
+    for (let d = CONFIG.BALL.carryDistance - step; d > 0; d -= step) {
+      point = this.carryPointAt(owner, d);
+      if (!this.overlapsKeeper(point)) return point;
+    }
+    return this.carryPointAt(owner, 0);
+  }
+
+  carryPointAt(owner, distance) {
+    const P = CONFIG.PITCH;
+    const r = CONFIG.BALL.radius;
+    return {
+      x: Phaser.Math.Clamp(
+        owner.sprite.x + Math.cos(owner.facing) * distance, P.left + r, P.right - r),
+      y: Phaser.Math.Clamp(
+        owner.sprite.y + Math.sin(owner.facing) * distance, P.top + r, P.bottom - r),
+    };
+  }
+
+  overlapsKeeper(point) {
+    const r = CONFIG.BALL.radius;
+    return this.keepers.some((k) => {
+      const b = k.sprite.body;
+      return point.x > b.x - r && point.x < b.right + r
+        && point.y > b.y - r && point.y < b.bottom + r;
+    });
   }
 
   tackle(now) {
