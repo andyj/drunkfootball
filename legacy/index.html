@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Drunk Football — old version</title>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; background: #101319; }
+    body { display: flex; align-items: center; justify-content: center; overflow: hidden; }
+    canvas { display: block; }
+
+    /*
+     * The only thing on this page that is not from that commit. It sits on the page rather
+     * than in the game, so game.js and render.js stay byte for byte what shipped that day.
+     * Bottom left is the one corner this build draws nothing in: the HUD owns both top
+     * corners and the pause hint sits bottom centre.
+     */
+    #normal {
+      position: fixed; bottom: 12px; left: 14px; z-index: 10;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      font-size: 15px; letter-spacing: 0.04em; color: #ffd166; text-decoration: none;
+      background: rgba(11, 14, 19, 0.9); border: 1px solid #3a4150;
+      padding: 8px 14px; border-radius: 5px;
+    }
+    #normal:hover, #normal:focus { color: #f2f2ea; border-color: #6b7484; }
+  </style>
+</head>
+<body>
+  <a id="normal" href="../">NORMAL VERSION</a>
+  <div id="game"></div>
+  <!-- Arcade-only Phaser build: everything this game uses, a fraction of the full bundle. -->
+  <script src="https://cdn.jsdelivr.net/npm/phaser@4.2.1/dist/phaser-arcade-physics.min.js"></script>
+  <script src="render.js"></script>
+  <script src="game.js"></script>
+</body>
+</html>
