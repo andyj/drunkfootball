@@ -360,6 +360,7 @@ const Renderer = {
   onKick(scene, player, kind, impulse) {},
   onWallBounce(scene, x, y, speed) {},
   onKeeperSave(scene, keeper, speed) {},
+  onKeeperClear(scene, keeper, mate) {},
   onKeeperFreeze(scene, keeper, frozen) {},
   onPossessionChange(scene, player) {},
   onStumble(scene, player, ms) {},

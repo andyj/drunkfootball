@@ -84,6 +84,9 @@ const CONFIG = {
     freezeEveryMaxMs: 4000,
     freezeMinMs: 500,
     freezeMaxMs: 1000,
+    clearMaxSpeed: 350,     // a ball arriving slower than this is gathered, not bounced
+    clearPower: 520,        // how hard the keeper hoofs it back out
+    clearSpreadDeg: 8,      // the keeper is a decent shot, but not a perfect one
   },
 
   MATCH: {
@@ -295,9 +298,7 @@ class GameScene extends Phaser.Scene {
       Renderer.onWallBounce(this, ball.x, ball.y, ball.body.speed);
     });
     this.keepers.forEach((keeper) => {
-      this.physics.add.collider(this.ball, keeper.sprite, (ball) => {
-        Renderer.onKeeperSave(this, keeper, ball.body.speed);
-      });
+      this.physics.add.collider(this.ball, keeper.sprite, () => this.keeperContact(keeper));
       // Keepers are solid to players as well as to the ball. Without this a dribbler
       // walks its body straight through the keeper and takes the ball with it.
       this.players.forEach((p) => this.physics.add.collider(p.sprite, keeper.sprite));
@@ -316,6 +317,7 @@ class GameScene extends Phaser.Scene {
     };
 
     this.pauseView = null;
+    this.ballApproachSpeed = 0;
     // Who starts with the ball is a coin toss, fresh for every match.
     this.state.kickoffTeam = Math.random() < 0.5 ? 'red' : 'blue';
     this.state.kickoffIsToss = true;
@@ -427,6 +429,13 @@ class GameScene extends Phaser.Scene {
     this.keepers.forEach((k) => this.updateKeeper(k, time));
     this.resolveActions(time);
     this.updatePossession(time);
+
+    // Arcade steps on the scene's UPDATE event, which fires BEFORE scene.update, so the
+    // next physics step runs before this method is called again and uses exactly the
+    // velocity recorded here. That makes this the speed the ball is travelling at when
+    // it reaches a keeper. Recorded after the kicks are resolved, otherwise a point
+    // blank shot would still look stationary to the keeper it was struck against.
+    this.ballApproachSpeed = this.ball.body.velocity.length();
 
     if (this.checkGoal(time)) return;
 
@@ -649,6 +658,35 @@ class GameScene extends Phaser.Scene {
       return point.x > b.x - r && point.x < b.right + r
         && point.y > b.y - r && point.y < b.bottom + r;
     });
+  }
+
+  /*
+   * The ball has reached a keeper.
+   *
+   * Anything arriving hard is simply blocked, and the bounce Arcade has already
+   * applied stands. Anything slow enough is gathered and hoofed back out toward that
+   * keeper's own outfield player, so winning the ball back is a reward for being
+   * somewhere useful. A frozen keeper does neither: the freeze is the scoring window
+   * and a free clearance would hand it straight back.
+   */
+  keeperContact(keeper) {
+    const speed = this.ballApproachSpeed;
+
+    if (keeper.frozen || speed > CONFIG.KEEPER.clearMaxSpeed) {
+      Renderer.onKeeperSave(this, keeper, speed);
+      return;
+    }
+
+    const mate = keeper.team === 'red' ? this.red : this.blue;
+    const spread = Phaser.Math.DegToRad(Phaser.Math.FloatBetween(
+      -CONFIG.KEEPER.clearSpreadDeg, CONFIG.KEEPER.clearSpreadDeg));
+    const angle = Phaser.Math.Angle.Between(
+      keeper.sprite.x, keeper.sprite.y, mate.sprite.x, mate.sprite.y) + spread;
+
+    this.ball.body.setVelocity(
+      Math.cos(angle) * CONFIG.KEEPER.clearPower,
+      Math.sin(angle) * CONFIG.KEEPER.clearPower);
+    Renderer.onKeeperClear(this, keeper, mate);
   }
 
   tackle(now) {
