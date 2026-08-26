@@ -143,7 +143,7 @@ const CONFIG = {
   /* Pass sits left of Shoot for both players, within reach of the movement hand. */
   CONTROLS: {
     red:  { up: 'W', down: 'S', left: 'A', right: 'D', pass: 'C', shoot: 'V' },
-    blue: { up: 'I', down: 'K', left: 'J', right: 'L', pass: 'N', shoot: 'M' },
+    blue: { up: 'I', down: 'K', left: 'J', right: 'L', pass: 'MINUS', shoot: 'PLUS' },
   },
 };
 

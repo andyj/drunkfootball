@@ -162,16 +162,27 @@ const Renderer = {
     return Renderer.PALETTE.surround;
   },
 
+  /* Phaser key codes are named, not printable. PLUS is the '=' key, not shift-equals. */
+  KEY_LABELS: {
+    MINUS: '-', PLUS: '=', COMMA: ',', PERIOD: '.', FORWARD_SLASH: '/',
+    BACK_SLASH: '\\', SEMICOLON: ';', QUOTES: "'", BACKTICK: '`',
+    OPEN_BRACKET: '[', CLOSED_BRACKET: ']',
+  },
+
+  keyLabel(name) {
+    return Renderer.KEY_LABELS[name] || name;
+  },
+
   /* Control text is derived from CONFIG.CONTROLS so a remap never leaves stale help on screen. */
   moveKeys(team) {
     const k = CONFIG.CONTROLS[team];
-    return [k.up, k.left, k.down, k.right].join(' ');
+    return [k.up, k.left, k.down, k.right].map(Renderer.keyLabel).join(' ');
   },
 
   controlSummary(team) {
     const k = CONFIG.CONTROLS[team];
     return Renderer.TEAM_NAME[team] + '   ' + Renderer.moveKeys(team) +
-      '   ' + k.pass + ' pass   ' + k.shoot + ' shoot';
+      '   ' + Renderer.keyLabel(k.pass) + ' pass   ' + Renderer.keyLabel(k.shoot) + ' shoot';
   },
 
   formatClock(seconds) {
@@ -377,8 +388,8 @@ const Renderer = {
     const rows = [
       ['', Renderer.TEAM_NAME.red, Renderer.TEAM_NAME.blue],
       ['Move', Renderer.moveKeys('red'), Renderer.moveKeys('blue')],
-      ['Pass', red.pass, blue.pass],
-      ['Shoot', red.shoot, blue.shoot],
+      ['Pass', Renderer.keyLabel(red.pass), Renderer.keyLabel(blue.pass)],
+      ['Shoot', Renderer.keyLabel(red.shoot), Renderer.keyLabel(blue.shoot)],
     ];
     rows.forEach((row, i) => {
       const y = 250 + i * 34;
@@ -460,7 +471,8 @@ const Renderer = {
       return;
     }
     const keys = CONFIG.CONTROLS[team];
-    view.prompt.setText(Renderer.TEAM_NAME[team] + ': press ' + keys.pass + ' or ' + keys.shoot);
+    view.prompt.setText(Renderer.TEAM_NAME[team] + ': press '
+      + Renderer.keyLabel(keys.pass) + ' or ' + Renderer.keyLabel(keys.shoot));
   },
 
   setPenaltyResult(view, outcomeKey, scored) {
