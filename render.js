@@ -58,23 +58,67 @@ const Renderer = {
   TEAM_NAME: { red: 'RED', blue: 'BLUE' },
 
   /* Text for every drunk outcome that betrayed the player. 'intended' has no entry,
-   * which is the joke: a label appearing at all means it went wrong. */
+   * which is the joke: a label appearing at all means it went wrong. One outcome has
+   * many ways of being described so the same gag does not land twice in a row. */
   OUTCOME_LABELS: {
-    wrongFoot: 'WRONG FOOT!',
-    wildSlice: 'SLICED IT!',
-    fumble: 'FUMBLE!',
-    whiff: 'WHIFF!',
-    backheel: 'BACKHEEL?!',
-    faceplant: 'TIMBER!',
+    wrongFoot: [
+      'WRONG FOOT!', 'OTHER FOOT!', 'BRAIN SAID NO', 'NOT THE PLAN',
+      'LEGS DISAGREED', 'MIXED IT UP', 'WRONG IDEA', 'THAT WASN\'T IT',
+    ],
+    wildSlice: [
+      'SLICED IT!', 'OFF THE SHIN!', 'ROW Z!', 'SHANKED IT!', 'TOE PUNT!',
+      'WHERE IS THAT GOING?', 'NO IDEA!', 'ABSOLUTE SCENES', 'INTO THE NIGHT',
+    ],
+    fumble: [
+      'FUMBLE!', 'SCUFFED IT', 'TOE POKE', 'DAISY CUTTER', 'STUBBED IT',
+      'WENT NOWHERE', 'LOVELY TOUCH', 'BARELY BOTHERED',
+    ],
+    whiff: [
+      'WHIFF!', 'FRESH AIR!', 'AIR SHOT!', 'SWING AND A MISS', 'KICKED THE GRASS',
+      'NOTHING THERE', 'MISSED IT ENTIRELY', 'ALL BREEZE',
+    ],
+    backheel: [
+      'BACKHEEL?!', 'WRONG WAY!', 'BEHIND YOU!', 'THAT IS BACKWARDS',
+      'CHEEKY', 'SHOWBOATING', 'WHO IS THAT FOR?',
+    ],
+    faceplant: [
+      'TIMBER!', 'FLAT OUT', 'GOODNIGHT', 'GRAVITY WINS', 'HAD A SIT DOWN',
+      'LEGS GONE', 'DOWN AND OUT', 'FOUND THE FLOOR',
+    ],
   },
 
   PENALTY_LABELS: {
-    clean: 'CLEAN STRIKE',
-    wrongNumber: 'WRONG CORNER!',
-    skied: 'OVER THE BAR!',
-    fumble: 'FUMBLED IT!',
-    slice: 'WIDE!',
-    faceplant: 'TIMBER!',
+    clean: [
+      'CLEAN STRIKE', 'RIGHT ON THE LACES', 'PROPER CONTACT', 'SWEETLY STRUCK',
+      'NO ARGUMENT', 'BANG ON',
+    ],
+    wrongNumber: [
+      'WRONG CORNER!', 'NOT THAT ONE!', 'MISCOUNTED', 'WRONG NUMBER!',
+      'AIMED ELSEWHERE', 'THE OTHER ONE', 'CAN YOU COUNT?',
+    ],
+    skied: [
+      'OVER THE BAR!', 'ROW Z!', 'INTO ORBIT', 'STILL RISING', 'MOON SHOT',
+      'ASK THE STEWARD', 'GONE FOR GOOD',
+    ],
+    fumble: [
+      'FUMBLED IT!', 'ROLLED IT', 'APOLOGETIC', 'A GENTLE GIFT', 'BACK PASS?',
+      'WELL WRAPPED',
+    ],
+    slice: [
+      'WIDE!', 'MILES WIDE', 'OFF THE SHIN', 'NOWHERE NEAR', 'CORNER FLAG',
+      'WRONG POSTCODE',
+    ],
+    faceplant: [
+      'TIMBER!', 'FELL OVER IT', 'GOODNIGHT', 'LEGS GONE', 'SAT DOWN',
+      'BEATEN BY THE BALL',
+    ],
+  },
+
+  /* One phrase from an outcome's list. */
+  phraseFor(table, key) {
+    const list = table[key];
+    if (!list) return null;
+    return Phaser.Utils.Array.GetRandom(list);
   },
 
   /* ------------------------------------------------------------- textures */
@@ -301,7 +345,7 @@ const Renderer = {
   },
 
   onOutcome(scene, player, outcomeKey) {
-    const str = Renderer.OUTCOME_LABELS[outcomeKey];
+    const str = Renderer.phraseFor(Renderer.OUTCOME_LABELS, outcomeKey);
     if (!str) return;
     const label = Renderer.text(scene, player.sprite.x, player.sprite.y - 34, str, 22, Renderer.CSS.accent)
       .setOrigin(0.5).setDepth(Renderer.DEPTH.label);
@@ -485,7 +529,8 @@ const Renderer = {
       view.result.setText('');
       return;
     }
-    view.result.setText(Renderer.PENALTY_LABELS[outcomeKey] + '   ' + (scored ? 'GOAL' : 'NO GOAL'));
+    view.result.setText(Renderer.phraseFor(Renderer.PENALTY_LABELS, outcomeKey)
+      + '   ' + (scored ? 'GOAL' : 'NO GOAL'));
     view.result.setColor(scored ? Renderer.CSS.good : Renderer.CSS.bad);
   },
 
