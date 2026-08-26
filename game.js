@@ -47,6 +47,21 @@ const CONFIG = {
     tackleImpulseMax: 190,
   },
 
+  /*
+   * What the pitch does underfoot. Skins are cosmetic everywhere else, so this is the one
+   * place the choice reaches the mechanics, and the numbers live here with the rest of
+   * the physics rather than in render.js. A skin only names the surface it is played on.
+   *
+   * grip is the fraction of the gap between current and intended velocity closed each
+   * frame, so 1 is the instant response the game has always had and anything less slides.
+   * ballDragScale multiplies BALL.drag, which stays the single source for how a ball rolls.
+   */
+  SURFACES: {
+    grass: { grip: 1, ballDragScale: 1 },
+    ice: { grip: 0.12, ballDragScale: 0.55 },
+  },
+  SURFACE_BY_SKIN: { frozen: 'ice' },
+
   KICK: {
     passPower: 420,
     shootPower: 750,
@@ -80,6 +95,16 @@ const CONFIG = {
     speed: 210,
     lineInset: 20,          // how far in front of the line the keeper stands
     deadZone: 4,
+    /*
+     * How stale the keeper's picture of the ball is. At 0 it reads the ball every frame
+     * and is already standing on the line of the shot before you hit it, which no amount
+     * of making it slower or smaller undoes: measured over 500 shots, cutting its speed
+     * and its height moved conversion by less than a point. A delay is the only knob that
+     * bites, because a shot is in the air for barely longer than this.
+     *
+     * Measured conversion from the attacking third: 0ms 11.6%, 110ms 15.0%, 180ms 19.0%.
+     */
+    reactionMs: 110,
     freezeEveryMinMs: 2000,
     freezeEveryMaxMs: 4000,
     freezeMinMs: 500,
@@ -96,16 +121,59 @@ const CONFIG = {
     kickoffStepMs: 450,
   },
 
+  /*
+   * Difficulty is skill, never sobriety. Every bot rolls the same DRUNK.TABLE the human
+   * does, so a hard bot is one that reacts quickly, reads pressure early and aims
+   * straight. It mis-hits exactly as often as you do, it just wastes fewer of the
+   * touches that come off. medium is the bot that shipped before difficulty existed.
+   *
+   * The knobs, once, so the three blocks below can stay a wall of numbers:
+   *   reactionMinMs/MaxMs        how stale its picture of the pitch is between decisions
+   *   chaseWobbleScale           how loosely it aims at a loose ball
+   *   driftWobblePx              how much it wanders while carrying
+   *   aimWobbleDeg               slop added to its every pass and shot
+   *   shootProgress              fraction of the pitch covered before it shoots
+   *   pressureRadius             how close you get before it counts as pressure
+   *   passUnderPressureChance    odds it panics and hoofs the ball away when pressured
+   */
   BOT: {
-    reactionMinMs: 150,
-    reactionMaxMs: 250,
-    shootProgress: 0.6,     // fraction of the pitch covered before it shoots
-    pressureRadius: 150,
-    passUnderPressureChance: 0.35,
-    aimWobbleDeg: 9,
-    driftWobblePx: 55,
-    chaseWobbleScale: 0.3,   // the bot aims loosely at the ball, not exactly at it
     steerDeadZonePx: 12,     // how close to the target counts as "arrived" per axis
+    order: ['easy', 'medium', 'hard'],     // what 1, 2 and 3 mean, in order
+    pickKeys: ['ONE', 'TWO', 'THREE'],
+    padKeys: ['NUMPAD_ONE', 'NUMPAD_TWO', 'NUMPAD_THREE'],
+    defaultLevel: 'medium',
+    LEVELS: {
+      easy: {
+        reactionMinMs: 320,
+        reactionMaxMs: 480,
+        chaseWobbleScale: 0.6,
+        driftWobblePx: 90,
+        aimWobbleDeg: 16,
+        shootProgress: 0.45,
+        pressureRadius: 90,
+        passUnderPressureChance: 0.5,
+      },
+      medium: {
+        reactionMinMs: 150,
+        reactionMaxMs: 250,
+        chaseWobbleScale: 0.3,
+        driftWobblePx: 55,
+        aimWobbleDeg: 9,
+        shootProgress: 0.6,
+        pressureRadius: 150,
+        passUnderPressureChance: 0.35,
+      },
+      hard: {
+        reactionMinMs: 80,
+        reactionMaxMs: 140,
+        chaseWobbleScale: 0.12,
+        driftWobblePx: 25,
+        aimWobbleDeg: 4,
+        shootProgress: 0.68,
+        pressureRadius: 200,
+        passUnderPressureChance: 0.15,
+      },
+    },
   },
 
   PENALTY: {
@@ -117,17 +185,21 @@ const CONFIG = {
     botDelayMaxMs: 1400,
     kickAnimMs: 520,
     resultHoldMs: 1200,
+    /*
+     * The shootout is staged on the real pitch at blue's goal, so the goal line, mouth
+     * and depth are the pitch's own and are derived below rather than set here. What is
+     * left is where the spot sits and how far a miss travels past the line, and those
+     * are bounded by the strip of surround behind the goal: keep every offset under
+     * about 70px or a skied ball flies off the right edge of the canvas.
+     */
     GEOM: {
-      fieldTop: 90,
-      fieldHeight: 400,
-      goalLineX: 980,
-      goalDepth: 60,
-      spotX: 560,
-      behindLineX: 40,       // where a scoring ball settles past the line
+      spotInset: 88,         // penalty spot, back from blue's goal line
+      takerOffsetX: 54,      // how far behind the ball the taker stands
+      behindLineX: 32,       // where a scoring ball settles past the line
       keeperGapX: 14,        // gap between a saved ball and the keeper
-      wideOffsetX: 30,
+      wideOffsetX: 26,
       wideOffsetY: 62,       // clear of the post
-      skiedOffsetX: 96,
+      skiedOffsetX: 58,
       skiedOffsetY: 128,     // over the bar
     },
     /*
@@ -169,11 +241,16 @@ const CONFIG = {
   P.mouthTop = P.centreY - P.goalMouth / 2;
   P.mouthBottom = P.centreY + P.goalMouth / 2;
 
+  // Penalties happen at blue's goal, the right-hand one, on the same pitch the match is
+  // played on. Every shared number comes straight from the pitch so the two can't drift.
   const G = CONFIG.PENALTY.GEOM;
+  G.goalLineX = P.right;
+  G.goalDepth = P.goalDepth;
   G.mouthHeight = P.goalMouth;
-  G.mouthTop = G.fieldTop + (G.fieldHeight - G.mouthHeight) / 2;
-  G.mouthBottom = G.mouthTop + G.mouthHeight;
-  G.spotY = G.mouthTop + G.mouthHeight / 2;
+  G.mouthTop = P.mouthTop;
+  G.mouthBottom = P.mouthBottom;
+  G.spotX = P.right - G.spotInset;
+  G.spotY = P.centreY;
   G.thirdY = {
     top: G.mouthTop + G.mouthHeight / 6,
     centre: G.spotY,
@@ -229,6 +306,64 @@ function updateKeeperFreeze(scene, keeper, now) {
   }
 }
 
+/*
+ * Red's mouse scheme, for one-player matches only: left click passes, right click shoots.
+ * Nothing else changes, so red still faces wherever it is running and a kick goes where it
+ * always did. Two humans cannot share one pointer, so a two-player match never sees any of
+ * it. Kept outside the scenes so the choice survives a rematch, and M turns it off during
+ * a match for anyone who would rather keep both hands on the keys.
+ */
+const AIM = { redUsesMouse: true };
+
+/*
+ * Legacy mode is the game as it stood at the commit that put blue's kicks on - and =,
+ * kept whole in legacy/ rather than reconstructed from flags. Every feature added since
+ * would need its own conditional otherwise, and a copy is the honest article: the same
+ * files that shipped that day, with a button on the page to come back.
+ */
+const LEGACY_URL = 'legacy/';
+
+/*
+ * The settings screen promises these are kept, so they are. The skin looks after itself in
+ * render.js; this is everything else. Storage throws in private browsing, and a forgotten
+ * preference is not worth a crash.
+ */
+const PREFS_KEY = 'drunkfootball.prefs';
+
+function loadPrefs() {
+  let raw = null;
+  try {
+    raw = window.localStorage.getItem(PREFS_KEY);
+  } catch (err) { raw = null; }
+
+  if (raw) {
+    let saved = null;
+    try {
+      saved = JSON.parse(raw);
+    } catch (err) { saved = null; }
+    if (saved && typeof saved.redUsesMouse === 'boolean') AIM.redUsesMouse = saved.redUsesMouse;
+  }
+}
+
+function savePrefs() {
+  try {
+    window.localStorage.setItem(PREFS_KEY, JSON.stringify({
+      redUsesMouse: AIM.redUsesMouse,
+    }));
+  } catch (err) { /* nothing worth doing */ }
+}
+
+/*
+ * Shared by every menu screen. A new palette means the baked sprites are the wrong
+ * colours and the drawn pitch is stale, so the honest fix is to rebuild both and redraw
+ * the screen you are standing on.
+ */
+function chooseSkin(scene, key) {
+  Renderer.applySkin(key);
+  Renderer.rebakeTextures(scene);
+  scene.scene.restart();
+}
+
 /* ==========================================================================
  * MenuScene
  * ======================================================================= */
@@ -238,17 +373,174 @@ class MenuScene extends Phaser.Scene {
 
   create() {
     Renderer.makeTextures(this);
-    Renderer.createMenu(this);
+    Renderer.createMenu(this, (index) => this.pick(index));
     this.keys = this.input.keyboard.addKeys('ONE,TWO,NUMPAD_ONE,NUMPAD_TWO');
+  }
+
+  /* The single place a menu choice means anything, whether it arrived by key or click. */
+  pick(index) {
+    this.scene.start(index === 0 ? 'Play' : 'Settings');
   }
 
   update() {
     const k = this.keys;
     const JustDown = Phaser.Input.Keyboard.JustDown;
-    const one = JustDown(k.ONE) || JustDown(k.NUMPAD_ONE);
-    const two = JustDown(k.TWO) || JustDown(k.NUMPAD_TWO);
-    if (one) this.scene.start('Game', { mode: 'bot' });
-    else if (two) this.scene.start('Game', { mode: 'two' });
+    if (JustDown(k.ONE) || JustDown(k.NUMPAD_ONE)) this.pick(0);
+    else if (JustDown(k.TWO) || JustDown(k.NUMPAD_TWO)) this.pick(1);
+  }
+}
+
+/* ==========================================================================
+ * PlayScene — what kind of game, once you have said you want one
+ * ======================================================================= */
+
+class PlayScene extends Phaser.Scene {
+  constructor() { super('Play'); }
+
+  create() {
+    Renderer.makeTextures(this);
+    Renderer.createPlay(this, (index) => this.pick(index));
+    this.keys = this.input.keyboard.addKeys(
+      'ONE,TWO,THREE,NUMPAD_ONE,NUMPAD_TWO,NUMPAD_THREE');
+    this.backKey = this.input.keyboard.addKey('ESC');
+  }
+
+  pick(index) {
+    if (index === 0) this.scene.start('Difficulty');
+    else if (index === 1) this.scene.start('Game', { mode: 'two' });
+    else this.scene.start('PenaltyMode');
+  }
+
+  update() {
+    const k = this.keys;
+    const JustDown = Phaser.Input.Keyboard.JustDown;
+    if (JustDown(this.backKey)) this.scene.start('Menu');
+    else if (JustDown(k.ONE) || JustDown(k.NUMPAD_ONE)) this.pick(0);
+    else if (JustDown(k.TWO) || JustDown(k.NUMPAD_TWO)) this.pick(1);
+    else if (JustDown(k.THREE) || JustDown(k.NUMPAD_THREE)) this.pick(2);
+  }
+}
+
+/* ==========================================================================
+ * SettingsScene — the skin, and whether red's mouse buttons kick
+ * ======================================================================= */
+
+class SettingsScene extends Phaser.Scene {
+  constructor() { super('Settings'); }
+
+  create() {
+    Renderer.makeTextures(this);
+    Renderer.createSettings(this, { mouseClicks: AIM.redUsesMouse }, {
+      skin: (key) => chooseSkin(this, key),
+      mouse: () => this.toggleMouse(),
+      legacy: () => { window.location.href = LEGACY_URL; },
+    });
+    this.keys = this.input.keyboard.addKeys(
+      CONFIG.BOT.pickKeys.concat(CONFIG.BOT.padKeys).join(',') + ',FOUR,NUMPAD_FOUR,M,L');
+    this.backKey = this.input.keyboard.addKey('ESC');
+  }
+
+  toggleMouse() {
+    AIM.redUsesMouse = !AIM.redUsesMouse;
+    savePrefs();
+    this.scene.restart();
+  }
+
+
+  update() {
+    const JustDown = Phaser.Input.Keyboard.JustDown;
+
+    if (JustDown(this.backKey)) {
+      this.scene.start('Menu');
+      return;
+    }
+    if (JustDown(this.keys.M)) {
+      this.toggleMouse();
+      return;
+    }
+    if (JustDown(this.keys.L)) {
+      window.location.href = LEGACY_URL;
+      return;
+    }
+
+    // 1 to 3 pick a skin, 4 is the fourth skin, and the mouse toggle answers to M.
+    for (let i = 0; i < CONFIG.BOT.pickKeys.length; i++) {
+      if (JustDown(this.keys[CONFIG.BOT.pickKeys[i]])
+        || JustDown(this.keys[CONFIG.BOT.padKeys[i]])) {
+        chooseSkin(this, Renderer.SKINS[i].key);
+        return;
+      }
+    }
+    if (JustDown(this.keys.FOUR) || JustDown(this.keys.NUMPAD_FOUR)) {
+      chooseSkin(this, Renderer.SKINS[3].key);
+    }
+  }
+}
+
+/* ==========================================================================
+ * PenaltyModeScene — who is taking them, when the shootout is the whole game
+ * ======================================================================= */
+
+class PenaltyModeScene extends Phaser.Scene {
+  constructor() { super('PenaltyMode'); }
+
+  create() {
+    Renderer.makeTextures(this);
+    Renderer.createPenaltyMode(this, (index) => this.pick(index));
+    this.keys = this.input.keyboard.addKeys('ONE,TWO,NUMPAD_ONE,NUMPAD_TWO');
+    this.backKey = this.input.keyboard.addKey('ESC');
+  }
+
+  pick(index) {
+    this.scene.start('Penalty', { mode: index === 0 ? 'bot' : 'two', standalone: true });
+  }
+
+  update() {
+    const k = this.keys;
+    const JustDown = Phaser.Input.Keyboard.JustDown;
+
+    if (JustDown(this.backKey)) this.scene.start('Play');
+    else if (JustDown(k.ONE) || JustDown(k.NUMPAD_ONE)) this.pick(0);
+    else if (JustDown(k.TWO) || JustDown(k.NUMPAD_TWO)) this.pick(1);
+  }
+}
+
+/* ==========================================================================
+ * DifficultyScene — which bot you are up against
+ * ======================================================================= */
+
+class DifficultyScene extends Phaser.Scene {
+  constructor() { super('Difficulty'); }
+
+  create() {
+    Renderer.makeTextures(this);
+    Renderer.createDifficulty(this, (index) => this.pick(index));
+
+    // Same 1/2/3 shape as the penalty picker, numpad equivalents accepted.
+    this.pickKeys = this.input.keyboard.addKeys(
+      CONFIG.BOT.pickKeys.concat(CONFIG.BOT.padKeys).join(','));
+    this.backKey = this.input.keyboard.addKey('ESC');
+  }
+
+  pick(index) {
+    this.scene.start('Game', { mode: 'bot', difficulty: CONFIG.BOT.order[index] });
+  }
+
+  update() {
+    const JustDown = Phaser.Input.Keyboard.JustDown;
+
+    if (JustDown(this.backKey)) {
+      this.scene.start('Play');
+      return;
+    }
+
+    for (let i = 0; i < CONFIG.BOT.pickKeys.length; i++) {
+      if (JustDown(this.pickKeys[CONFIG.BOT.pickKeys[i]])
+        || JustDown(this.pickKeys[CONFIG.BOT.padKeys[i]])) {
+        this.pick(i);
+        break;
+      }
+    }
   }
 }
 
@@ -261,6 +553,16 @@ class GameScene extends Phaser.Scene {
 
   init(data) {
     this.mode = (data && data.mode) || 'bot';
+
+    // Resolved once here so every bot read is a plain property lookup, and so a rematch
+    // arriving from full time with a stale or missing level still starts a match.
+    const asked = (data && data.difficulty) || CONFIG.BOT.defaultLevel;
+    this.difficulty = CONFIG.BOT.LEVELS[asked] ? asked : CONFIG.BOT.defaultLevel;
+    this.botCfg = CONFIG.BOT.LEVELS[this.difficulty];
+
+    // The chosen skin decides what you are playing on. Anything unmapped is grass.
+    this.surface = CONFIG.SURFACES[CONFIG.SURFACE_BY_SKIN[Renderer.activeSkin]]
+      || CONFIG.SURFACES.grass;
   }
 
   create() {
@@ -295,7 +597,8 @@ class GameScene extends Phaser.Scene {
     this.bot = this.blue.isBot ? this.makeBot(this.blue) : null;
 
     this.ball = Renderer.createBall(this, P.centreX, P.centreY);
-    this.ball.body.setDrag(CONFIG.BALL.drag, CONFIG.BALL.drag);
+    const ballDrag = CONFIG.BALL.drag * this.surface.ballDragScale;
+    this.ball.body.setDrag(ballDrag, ballDrag);
     this.ball.body.setBounce(CONFIG.BALL.bounce, CONFIG.BALL.bounce);
     this.ball.body.setMaxVelocity(CONFIG.BALL.maxSpeed, CONFIG.BALL.maxSpeed);
 
@@ -314,9 +617,17 @@ class GameScene extends Phaser.Scene {
     });
 
     this.keys = { red: keysFor(this, 'red'), blue: keysFor(this, 'blue') };
-    this.systemKeys = this.input.keyboard.addKeys('P,ESC');
+    this.systemKeys = this.input.keyboard.addKeys('P,ESC,M');
 
-    this.hud = Renderer.createHUD(this, this.mode);
+    // Without this the browser's own menu swallows every right click.
+    this.input.mouse.disableContextMenu();
+    this.queuedClick = null;
+    this.input.on('pointerdown', (pointer) => {
+      if (!this.redUsesMouse()) return;
+      this.queuedClick = pointer.rightButtonDown() ? 'shoot' : 'pass';
+    });
+
+    this.hud = Renderer.createHUD(this, this.mode, this.difficulty, this.redUsesMouse());
     this.view = {
       players: this.players,
       ball: this.ball,
@@ -385,6 +696,8 @@ class GameScene extends Phaser.Scene {
       frozen: false,
       frozenUntil: 0,
       nextFreezeAt: 0,
+      nextLookAt: 0,
+      targetY: P.centreY,
       sprite: Renderer.createKeeper(this, x, P.centreY, team),
     };
     keeper.sprite.body.setImmovable(true);
@@ -411,6 +724,14 @@ class GameScene extends Phaser.Scene {
     const pausePressed = Phaser.Input.Keyboard.JustDown(this.systemKeys.P);
     const escPressed = Phaser.Input.Keyboard.JustDown(this.systemKeys.ESC);
     if (pausePressed || escPressed) this.togglePause();
+
+    // Swapping works while paused too, which is when you are most likely to want it.
+    // In a two-player match there is nothing to swap, so the key is left alone.
+    if (this.mode === 'bot' && Phaser.Input.Keyboard.JustDown(this.systemKeys.M)) {
+      AIM.redUsesMouse = !AIM.redUsesMouse;
+      savePrefs();
+      Renderer.updateControlHint(this.hud, this.redUsesMouse());
+    }
 
     if (this.state.paused || this.state.phase === 'over') {
       this.freezeEveryone();
@@ -459,6 +780,7 @@ class GameScene extends Phaser.Scene {
     this.readHumanInput(this.red);
     if (this.bot) this.readBotInput(this.bot, now);
     else this.readHumanInput(this.blue);
+    this.queuedClick = null;   // consumed or not, a click is worth exactly one frame
   }
 
   readHumanInput(player) {
@@ -472,6 +794,10 @@ class GameScene extends Phaser.Scene {
     input.right = keys[map.right].isDown;
     input.pass = JustDown(keys[map.pass]);
     input.shoot = JustDown(keys[map.shoot]);
+
+    // A click is just another way of pressing the same button, so it fills in the same
+    // struct and runs down the identical kick path, drunk roll and all.
+    if (this.queuedClick && this.mouseKicker(player)) input[this.queuedClick] = true;
   }
 
   /*
@@ -486,7 +812,7 @@ class GameScene extends Phaser.Scene {
 
     if (now >= bot.nextDecisionAt) {
       bot.nextDecisionAt = now + Phaser.Math.Between(
-        CONFIG.BOT.reactionMinMs, CONFIG.BOT.reactionMaxMs);
+        this.botCfg.reactionMinMs, this.botCfg.reactionMaxMs);
       this.decideBot(bot);
     }
 
@@ -507,7 +833,7 @@ class GameScene extends Phaser.Scene {
   decideBot(bot) {
     const P = CONFIG.PITCH;
     const player = bot.player;
-    const wobble = () => Phaser.Math.FloatBetween(-1, 1) * CONFIG.BOT.driftWobblePx;
+    const wobble = () => Phaser.Math.FloatBetween(-1, 1) * this.botCfg.driftWobblePx;
 
     if (this.state.owner === player) {
       bot.targetX = player.targetGoalX;
@@ -519,22 +845,49 @@ class GameScene extends Phaser.Scene {
       const opponent = player === this.red ? this.blue : this.red;
       const pressured = Phaser.Math.Distance.Between(
         opponent.sprite.x, opponent.sprite.y, player.sprite.x, player.sprite.y
-      ) < CONFIG.BOT.pressureRadius;
+      ) < this.botCfg.pressureRadius;
 
-      if (covered >= CONFIG.BOT.shootProgress) bot.queuedKick = 'shoot';
-      else if (pressured && Math.random() < CONFIG.BOT.passUnderPressureChance) bot.queuedKick = 'pass';
+      if (covered >= this.botCfg.shootProgress) bot.queuedKick = 'shoot';
+      else if (pressured && Math.random() < this.botCfg.passUnderPressureChance) bot.queuedKick = 'pass';
     } else {
-      bot.targetX = this.ball.x + wobble() * CONFIG.BOT.chaseWobbleScale;
-      bot.targetY = this.ball.y + wobble() * CONFIG.BOT.chaseWobbleScale;
+      bot.targetX = this.ball.x + wobble() * this.botCfg.chaseWobbleScale;
+      bot.targetY = this.ball.y + wobble() * this.botCfg.chaseWobbleScale;
     }
   }
 
   /* ----------------------------------------------------------- movement */
 
+  /*
+   * Every velocity change goes through the surface, so on grass grip is 1 and this is the
+   * instant response it has always been, while on ice you carry on a little past the point
+   * you meant to stop at. Standing still and being stunned slide too: skidding on your
+   * back is the whole reason to play on ice.
+   */
+  steer(body, targetX, targetY) {
+    const grip = this.surface.grip;
+    if (grip >= 1) {
+      body.setVelocity(targetX, targetY);
+      return;
+    }
+    body.setVelocity(
+      Phaser.Math.Linear(body.velocity.x, targetX, grip),
+      Phaser.Math.Linear(body.velocity.y, targetY, grip));
+  }
+
+  /* Switched on, and a one-player match: two humans cannot share one pointer. */
+  redUsesMouse() {
+    return AIM.redUsesMouse && this.mode === 'bot';
+  }
+
+  /* Whose kicks a click counts as. Red's, and only red's. */
+  mouseKicker(player) {
+    return this.redUsesMouse() && player === this.red;
+  }
+
   movePlayer(player, now) {
     const body = player.sprite.body;
     if (now < player.stunnedUntil) {
-      body.setVelocity(0, 0);
+      this.steer(body, 0, 0);
       return;
     }
 
@@ -543,7 +896,7 @@ class GameScene extends Phaser.Scene {
     let dy = (input.down ? 1 : 0) - (input.up ? 1 : 0);
 
     if (dx === 0 && dy === 0) {
-      body.setVelocity(0, 0);
+      this.steer(body, 0, 0);
       return;
     }
 
@@ -558,7 +911,7 @@ class GameScene extends Phaser.Scene {
     }
 
     const speed = this.state.owner === player ? CONFIG.PLAYER.dribbleSpeed : CONFIG.PLAYER.speed;
-    body.setVelocity(dx * speed, dy * speed);
+    this.steer(body, dx * speed, dy * speed);
   }
 
   updateKeeper(keeper, now) {
@@ -573,8 +926,13 @@ class GameScene extends Phaser.Scene {
       return;
     }
 
-    const target = Phaser.Math.Clamp(this.ball.y, P.mouthTop + half, P.mouthBottom - half);
-    const dy = target - keeper.sprite.y;
+    // It only looks up every reactionMs, and moves towards wherever the ball was then.
+    if (now >= keeper.nextLookAt) {
+      keeper.nextLookAt = now + CONFIG.KEEPER.reactionMs;
+      keeper.targetY = Phaser.Math.Clamp(this.ball.y, P.mouthTop + half, P.mouthBottom - half);
+    }
+
+    const dy = keeper.targetY - keeper.sprite.y;
     if (Math.abs(dy) < CONFIG.KEEPER.deadZone) body.setVelocityY(0);
     else body.setVelocityY(Math.sign(dy) * CONFIG.KEEPER.speed);
   }
@@ -773,7 +1131,7 @@ class GameScene extends Phaser.Scene {
   }
 
   doKick(player, kind, now) {
-    const wobble = player.isBot ? CONFIG.BOT.aimWobbleDeg : 0;
+    const wobble = player.isBot ? this.botCfg.aimWobbleDeg : 0;
 
     if (kind === 'pass') {
       const angle = player.facing + Phaser.Math.DegToRad(Phaser.Math.FloatBetween(-wobble, wobble));
@@ -887,8 +1245,9 @@ class GameScene extends Phaser.Scene {
 
     const scores = { red: this.state.scores.red, blue: this.state.scores.blue };
     // Level at full time goes straight to penalties. No golden goal, no extra time.
-    if (scores.red === scores.blue) this.scene.start('Penalty', { mode: this.mode, scores });
-    else this.scene.start('FullTime', { mode: this.mode, scores, penalties: null });
+    const carry = { mode: this.mode, difficulty: this.difficulty, scores };
+    if (scores.red === scores.blue) this.scene.start('Penalty', carry);
+    else this.scene.start('FullTime', Object.assign({ penalties: null }, carry));
   }
 }
 
@@ -901,7 +1260,11 @@ class PenaltyScene extends Phaser.Scene {
 
   init(data) {
     this.mode = data.mode;
-    this.matchScores = data.scores;
+    this.difficulty = data.difficulty;
+    // Picked straight off the menu rather than reached through a drawn match, in which
+    // case there is no match scoreline to carry into full time.
+    this.standalone = !!data.standalone;
+    this.matchScores = data.scores || null;
   }
 
   create() {
@@ -1080,6 +1443,8 @@ class PenaltyScene extends Phaser.Scene {
     if (this.isDecided()) {
       this.scene.start('FullTime', {
         mode: this.mode,
+        difficulty: this.difficulty,
+        standalone: this.standalone,
         scores: this.matchScores,
         penalties: { red: this.tally.redScore, blue: this.tally.blueScore },
       });
@@ -1101,7 +1466,9 @@ class FullTimeScene extends Phaser.Scene {
 
   init(data) {
     this.mode = data.mode;
-    this.scores = data.scores;
+    this.difficulty = data.difficulty;
+    this.standalone = !!data.standalone;
+    this.scores = data.scores || null;
     this.penalties = data.penalties || null;
   }
 
@@ -1111,7 +1478,7 @@ class FullTimeScene extends Phaser.Scene {
     let winner = null;
     if (this.penalties) {
       winner = this.penalties.red > this.penalties.blue ? 'red' : 'blue';
-    } else if (this.scores.red !== this.scores.blue) {
+    } else if (this.scores && this.scores.red !== this.scores.blue) {
       winner = this.scores.red > this.scores.blue ? 'red' : 'blue';
     }
 
@@ -1124,12 +1491,20 @@ class FullTimeScene extends Phaser.Scene {
 
   update() {
     const JustDown = Phaser.Input.Keyboard.JustDown;
-    if (JustDown(this.keys.SPACE)) this.scene.start('Game', { mode: this.mode });
+    if (JustDown(this.keys.SPACE)) {
+      // Whatever you just played is what SPACE gives you again.
+      if (this.standalone) this.scene.start('Penalty', { mode: this.mode, standalone: true });
+      else this.scene.start('Game', { mode: this.mode, difficulty: this.difficulty });
+    }
     else if (JustDown(this.keys.M)) this.scene.start('Menu');
   }
 }
 
 /* ========================================================================== */
+
+/* Before the game exists, so the first pitch and the first menu are already yours. */
+Renderer.loadSkin();
+loadPrefs();
 
 /* Exposed so the game can be inspected from the console during development. */
 window.game = new Phaser.Game({
@@ -1146,5 +1521,6 @@ window.game = new Phaser.Game({
     default: 'arcade',
     arcade: { gravity: { x: 0, y: 0 }, debug: false },
   },
-  scene: [MenuScene, GameScene, PenaltyScene, FullTimeScene],
+  scene: [MenuScene, PlayScene, SettingsScene, DifficultyScene, PenaltyModeScene,
+    GameScene, PenaltyScene, FullTimeScene],
 });

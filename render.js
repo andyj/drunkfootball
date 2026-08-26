@@ -27,6 +27,7 @@ const Renderer = {
   PALETTE: {
     surround: 0x101319,
     grass: 0x2f7d40,
+    grassAlt: 0x35894a,     // the lighter mown band, a shade up from grass
     line: 0xf2f2ea,
     net: 0x1d2430,
     red: 0xe04b4b,
@@ -36,6 +37,54 @@ const Renderer = {
     keeperRed: 0xf0a0a0,
     keeperBlue: 0xa0bcf0,
     outline: 0x14181f,
+  },
+
+  /*
+   * The rail round the pitch and the people leaning on it. Only skins that ask for a
+   * crowd get one. The figures sit along the bottom touchline in two bands with a gap in
+   * the middle, which is where the pause hint and the clock live: a supporter standing on
+   * the HUD would look like a bug rather than a joke.
+   */
+  CROWD: {
+    fence: 0x4a5058,
+    railInset: 12,          // how far outside the touchline the rail sits
+    postEvery: 60,
+    postHalfHeight: 5,
+    figureRadius: 8,
+    standOff: 16,           // gap between the rail and the front row
+    minPeople: 45,
+    maxPeople: 60,          // rolled fresh for every match, nobody counts them
+    /*
+     * The stretches of surround with nothing else in them. The top bands are the
+     * narrower pair because the score, both control lines and the shootout title all
+     * live up there, and the bottom pair leaves the middle clear for the pause hint.
+     * The top gap is sized against the widest thing that sits in it, the shootout
+     * title, with room left over for jitterX and a figure's radius.
+     */
+    bands: {
+      top: [[320, 425], [855, 1030]],
+      bottom: [[140, 505], [775, 1140]],
+    },
+    jitterX: 5,
+    jitterY: 4,
+    jackets: [0x3b4a5a, 0x5a4634, 0x2f3b2f, 0x4a3a4a, 0x63513a, 0x40506b],
+    swayPx: 4,
+    swayMinMs: 1100,
+    swayMaxMs: 2100,
+  },
+
+  /*
+   * Pitch decoration. None of this is read by game.js and none of it changes where the
+   * ball can go, which is exactly why it lives here rather than in CONFIG.PITCH. Sizes
+   * are eyeballed against the 1120x600 playing area, not scaled from real yardages.
+   */
+  MARKINGS: {
+    stripes: 10,             // mown bands running goal to goal
+    penaltyDepth: 130,
+    penaltyHeight: 300,
+    goalAreaDepth: 52,
+    goalAreaHeight: 180,
+    cornerRadius: 18,
   },
 
   CSS: {
@@ -56,6 +105,62 @@ const Renderer = {
   },
 
   TEAM_NAME: { red: 'RED', blue: 'BLUE' },
+
+  /*
+   * Skins. Each one is a set of PALETTE overrides covering both kits and the pitch they
+   * are played on, so picking one is a single Object.assign. `surround` is deliberately
+   * not skinnable: Phaser reads it once when the game is constructed, so changing it
+   * later would leave a stale canvas background behind everything.
+   */
+  SKINS: [
+    {
+      key: 'classic',
+      name: 'CLASSIC',
+      blurb: 'red and blue, dry summer pitch',
+      colours: {
+        red: 0xe04b4b, blue: 0x4b7fe0, keeperRed: 0xf0a0a0, keeperBlue: 0xa0bcf0,
+        grass: 0x2f7d40, grassAlt: 0x35894a, line: 0xf2f2ea, net: 0x1d2430,
+      },
+    },
+    {
+      key: 'floodlit',
+      name: 'FLOODLIT',
+      blurb: 'deep green under the lights, kits turned up',
+      colours: {
+        red: 0xff5a5a, blue: 0x5aa0ff, keeperRed: 0xffb3b3, keeperBlue: 0xb3d4ff,
+        grass: 0x1f5c31, grassAlt: 0x246a38, line: 0xffffff, net: 0x11161f,
+      },
+    },
+    {
+      key: 'frozen',
+      name: 'FROZEN',
+      blurb: 'frost underfoot, everything slides a bit further',
+      colours: {
+        red: 0xc0392b, blue: 0x2c5fa8, keeperRed: 0xe8a49a, keeperBlue: 0x9db6dd,
+        grass: 0x7f9c88, grassAlt: 0x8caa95, line: 0xffffff, net: 0x2a3038,
+      },
+    },
+    {
+      key: 'sunday',
+      name: 'SUNDAY LEAGUE',
+      blurb: 'mud, a rail, and a dozen unsteady witnesses',
+      crowd: true,
+      colours: {
+        red: 0xe86a17, blue: 0x7a3fbf, keeperRed: 0xf2a878, keeperBlue: 0xb99ade,
+        grass: 0x5a6b3a, grassAlt: 0x63753f, line: 0xd8d2c0, net: 0x22261c,
+      },
+    },
+  ],
+
+  SKIN_STORAGE_KEY: 'drunkfootball.skin',
+  activeSkin: 'classic',
+
+  /* Every bot is equally drunk, so none of these promise a steadier opponent. */
+  DIFFICULTY_BLURB: {
+    easy: 'a few too many, legs not really listening',
+    medium: 'the bot you already know',
+    hard: 'same drunk legs, worryingly sober judgement',
+  },
 
   /* Text for every drunk outcome that betrayed the player. 'intended' has no entry,
    * which is the joke: a label appearing at all means it went wrong. One outcome has
@@ -123,6 +228,42 @@ const Renderer = {
 
   /* ------------------------------------------------------------- textures */
 
+  /* ------------------------------------------------------------------ skins */
+
+  applySkin(key) {
+    const skin = Renderer.SKINS.find((s) => s.key === key) || Renderer.SKINS[0];
+    Object.assign(Renderer.PALETTE, skin.colours);
+    Renderer.activeSkin = skin.key;
+
+    // Text names the teams too, so the CSS strings follow the kits. Without this a
+    // Sunday League match announces its orange side in the old red.
+    const hex = (n) => '#' + n.toString(16).padStart(6, '0');
+    Renderer.CSS.red = hex(Renderer.PALETTE.red);
+    Renderer.CSS.blue = hex(Renderer.PALETTE.blue);
+
+    // Storage throws in private browsing, and a forgotten skin is not worth a crash.
+    try {
+      window.localStorage.setItem(Renderer.SKIN_STORAGE_KEY, skin.key);
+    } catch (err) { /* nothing worth doing */ }
+  },
+
+  /* Called once before the game is constructed, so the first pitch drawn is the right one. */
+  loadSkin() {
+    let saved = null;
+    try {
+      saved = window.localStorage.getItem(Renderer.SKIN_STORAGE_KEY);
+    } catch (err) { saved = null; }
+    Renderer.applySkin(saved || Renderer.SKINS[0].key);
+  },
+
+  /* Baked textures cache by key, so a new palette needs the old ones thrown away first. */
+  rebakeTextures(scene) {
+    ['player_red', 'player_blue', 'keeper_red', 'keeper_blue', 'ball'].forEach((key) => {
+      if (scene.textures.exists(key)) scene.textures.remove(key);
+    });
+    Renderer.makeTextures(scene);
+  },
+
   makeTextures(scene) {
     const P = Renderer.PALETTE;
     const g = scene.make.graphics({ x: 0, y: 0 }, false);
@@ -162,6 +303,16 @@ const Renderer = {
     player('player_red', P.red);
     player('player_blue', P.blue);
 
+    // A supporter, seen from above: a blob. Baked white so each one can be tinted into
+    // its own coat without a texture per colour.
+    const fr = Renderer.CROWD.figureRadius;
+    bake('fan', fr * 2, fr * 2, () => {
+      g.fillStyle(0xffffff, 1);
+      g.lineStyle(2, P.outline, 1);
+      g.fillCircle(fr, fr, fr - 1);
+      g.strokeCircle(fr, fr, fr - 1);
+    });
+
     const br = CONFIG.BALL.radius;
     bake('ball', br * 2, br * 2, () => {
       g.fillStyle(P.ball, 1);
@@ -200,6 +351,33 @@ const Renderer = {
       .setOrigin(0.5).setDepth(Renderer.DEPTH.overlay);
   },
 
+  /*
+   * A menu line that answers to a click as well as to its number key. The scene owns what
+   * the choice means, this only reports that it was made, so the key and the click always
+   * land on the same code path.
+   */
+  option(scene, y, label, size, onPick) {
+    const C = Renderer.CSS;
+    const text = Renderer.centred(scene, y, label, size, C.accent);
+    return Renderer.makePickable(text, onPick, C.accent);
+  },
+
+  /* The same thing hung off a left edge, for screens that line choices up in a column. */
+  optionAt(scene, x, y, label, size, onPick, colour) {
+    const base = colour || Renderer.CSS.accent;
+    const text = Renderer.text(scene, x, y, label, size, base)
+      .setOrigin(0, 0.5).setDepth(Renderer.DEPTH.overlay);
+    return Renderer.makePickable(text, onPick, base);
+  },
+
+  makePickable(text, onPick, base) {
+    text.setInteractive({ useHandCursor: true })
+      .on('pointerover', () => text.setColor(Renderer.CSS.hud))
+      .on('pointerout', () => text.setColor(base))
+      .on('pointerdown', onPick);
+    return text;
+  },
+
   /* The canvas colour behind everything. Asked for by the Phaser config in game.js so
    * that no colour value has to live in game logic. */
   canvasBackground() {
@@ -217,16 +395,53 @@ const Renderer = {
     return Renderer.KEY_LABELS[name] || name;
   },
 
+  /*
+   * Who presses what, as a three column table. Both the front screen and settings draw it
+   * from here, so there is one layout and one source, and neither can go stale.
+   */
+  keyTable(scene, labelX, topY, rowGap, redX, blueX, size) {
+    const C = Renderer.CSS;
+    const red = CONFIG.CONTROLS.red;
+    const blue = CONFIG.CONTROLS.blue;
+    const rows = [
+      ['', Renderer.TEAM_NAME.red, Renderer.TEAM_NAME.blue],
+      ['Move', Renderer.moveKeys('red'), Renderer.moveKeys('blue')],
+      ['Pass', Renderer.keyLabel(red.pass), Renderer.keyLabel(blue.pass)],
+      ['Shoot', Renderer.keyLabel(red.shoot), Renderer.keyLabel(blue.shoot)],
+    ];
+    rows.forEach((row, i) => {
+      const y = topY + i * rowGap;
+      const colour = i === 0 ? C.accent : C.hud;
+      const s = i === 0 ? size - 2 : size;
+      Renderer.text(scene, labelX, y, row[0], s, colour).setDepth(Renderer.DEPTH.overlay);
+      Renderer.text(scene, redX, y, row[1], s, colour)
+        .setOrigin(0.5, 0).setDepth(Renderer.DEPTH.overlay);
+      Renderer.text(scene, blueX, y, row[2], s, colour)
+        .setOrigin(0.5, 0).setDepth(Renderer.DEPTH.overlay);
+    });
+  },
+
   /* Control text is derived from CONFIG.CONTROLS so a remap never leaves stale help on screen. */
   moveKeys(team) {
     const k = CONFIG.CONTROLS[team];
     return [k.up, k.left, k.down, k.right].map(Renderer.keyLabel).join(' ');
   },
 
-  controlSummary(team) {
+  /*
+   * With the mouse on, the click labels replace the key labels rather than joining them.
+   * The keys still work, but naming all four would run this line into the crowd standing
+   * along the top touchline, and the menu lists the keys anyway.
+   */
+  controlSummary(team, usesMouse) {
     const k = CONFIG.CONTROLS[team];
-    return Renderer.TEAM_NAME[team] + '   ' + Renderer.moveKeys(team) +
-      '   ' + Renderer.keyLabel(k.pass) + ' pass   ' + Renderer.keyLabel(k.shoot) + ' shoot';
+    const actions = usesMouse
+      ? 'click pass   right-click shoot'
+      : Renderer.keyLabel(k.pass) + ' pass   ' + Renderer.keyLabel(k.shoot) + ' shoot';
+    return Renderer.TEAM_NAME[team] + '   ' + Renderer.moveKeys(team) + '   ' + actions;
+  },
+
+  updateControlHint(hud, usesMouse) {
+    hud.left.setText(Renderer.controlSummary('red', usesMouse));
   },
 
   formatClock(seconds) {
@@ -247,6 +462,15 @@ const Renderer = {
     g.fillStyle(C.grass, 1);
     g.fillRect(P.left, P.top, P.width, P.height);
 
+    // Mown bands. Every other one is painted over the base grass, so the two shades
+    // alternate without either needing to know about the other.
+    const M = Renderer.MARKINGS;
+    const bandWidth = P.width / M.stripes;
+    g.fillStyle(C.grassAlt, 1);
+    for (let i = 1; i < M.stripes; i += 2) {
+      g.fillRect(P.left + i * bandWidth, P.top, bandWidth, P.height);
+    }
+
     // Goal recesses behind each line.
     g.fillStyle(C.net, 1);
     g.fillRect(P.left - P.goalDepth, P.mouthTop, P.goalDepth, P.goalMouth);
@@ -259,6 +483,33 @@ const Renderer = {
     g.fillStyle(C.line, 1);
     g.fillCircle(P.centreX, P.centreY, 5);
 
+    // Penalty area and six-yard box, mirrored about the halfway line. Each box hangs off
+    // its own goal line, so the left ones grow rightwards and the right ones leftwards.
+    g.lineStyle(3, C.line, 1);
+    [
+      [M.penaltyDepth, M.penaltyHeight],
+      [M.goalAreaDepth, M.goalAreaHeight],
+    ].forEach(([depth, height]) => {
+      const y = P.centreY - height / 2;
+      g.strokeRect(P.left, y, depth, height);
+      g.strokeRect(P.right - depth, y, depth, height);
+    });
+
+    // Corner arcs, each a quarter circle opening into the pitch.
+    [
+      [P.left, P.top, 0],
+      [P.right, P.top, 90],
+      [P.right, P.bottom, 180],
+      [P.left, P.bottom, 270],
+    ].forEach(([x, y, startDeg]) => {
+      g.beginPath();
+      g.arc(x, y, M.cornerRadius,
+        Phaser.Math.DegToRad(startDeg), Phaser.Math.DegToRad(startDeg + 90));
+      g.strokePath();
+    });
+
+    Renderer.createGround(scene, g);
+
     // Posts, so the two openings are unmistakable.
     g.lineStyle(5, C.line, 1);
     [P.mouthTop, P.mouthBottom].forEach((y) => {
@@ -267,6 +518,77 @@ const Renderer = {
     });
 
     return g;
+  },
+
+  /*
+   * Rail and crowd, for skins that ask for them. The rail runs along both touchlines
+   * only: the goals stick out past the ends, so a rail all the way round would be drawn
+   * straight through the nets.
+   */
+  createGround(scene, g) {
+    const skin = Renderer.SKINS.find((s) => s.key === Renderer.activeSkin);
+    if (!skin || !skin.crowd) return;
+
+    const P = CONFIG.PITCH;
+    const K = Renderer.CROWD;
+
+    g.lineStyle(2, K.fence, 1);
+    [P.top - K.railInset, P.bottom + K.railInset].forEach((y) => {
+      g.lineBetween(P.left - K.railInset, y, P.right + K.railInset, y);
+      for (let x = P.left - K.railInset; x <= P.right + K.railInset; x += K.postEvery) {
+        g.lineBetween(x, y - K.postHalfHeight, x, y + K.postHalfHeight);
+      }
+    });
+
+    /*
+     * A fresh turnout every match, spread down both touchlines. Each band gets a share of
+     * the total in proportion to how much room it has, so the crowd is the same density
+     * all the way round rather than packed at one end, and the last band takes whatever
+     * rounding left over so the total is exactly the number rolled.
+     */
+    const total = Phaser.Math.Between(K.minPeople, K.maxPeople);
+    const rows = [
+      { y: P.top - K.railInset - K.standOff, bands: K.bands.top },
+      { y: P.bottom + K.railInset + K.standOff, bands: K.bands.bottom },
+    ];
+    const roomAll = rows.reduce((sum, row) =>
+      sum + row.bands.reduce((w, [from, to]) => w + (to - from), 0), 0);
+
+    const lastRow = rows[rows.length - 1];
+    let placed = 0;
+    let n = 0;
+
+    rows.forEach((row) => {
+      row.bands.forEach(([from, to], bandIndex) => {
+        const isLast = row === lastRow && bandIndex === row.bands.length - 1;
+        const count = isLast
+          ? Math.max(0, total - placed)
+          : Math.round(total * ((to - from) / roomAll));
+        placed += count;
+
+        for (let i = 0; i < count; i += 1) {
+          const along = count === 1 ? 0.5 : i / (count - 1);
+          const fan = scene.add.image(
+            from + along * (to - from) + Phaser.Math.Between(-K.jitterX, K.jitterX),
+            row.y + Phaser.Math.Between(-K.jitterY, K.jitterY),
+            'fan')
+            .setTint(K.jackets[n % K.jackets.length])
+            .setDepth(Renderer.DEPTH.wall);
+          n += 1;
+
+          // Sideways only: a circle rotating on the spot would not read as anything.
+          scene.tweens.add({
+            targets: fan,
+            x: fan.x + (Phaser.Math.Between(-K.swayPx, K.swayPx) || K.swayPx),
+            duration: Phaser.Math.Between(K.swayMinMs, K.swayMaxMs),
+            delay: Phaser.Math.Between(0, 900),
+            yoyo: true,
+            repeat: -1,
+            ease: 'Sine.easeInOut',
+          });
+        }
+      });
+    });
   },
 
   /* Invisible in Phase 1: the pitch graphic already shows where the walls are. */
@@ -303,18 +625,23 @@ const Renderer = {
 
   /* ------------------------------------------------------------------ HUD */
 
-  createHUD(scene, mode) {
+  createHUD(scene, mode, difficulty, usesMouse) {
     const cx = CONFIG.CANVAS.width / 2;
     const C = Renderer.CSS;
     return {
       score: Renderer.text(scene, cx, 8, '0 - 0', 34).setOrigin(0.5, 0),
       timer: Renderer.text(scene, cx, 56, '0:00', 20, C.accent).setOrigin(0.5, 0),
-      left: Renderer.text(scene, 20, 12, Renderer.controlSummary('red'), 13, C.dim),
+      left: Renderer.text(scene, 20, 12, Renderer.controlSummary('red', usesMouse), 13, C.dim),
       right: Renderer.text(scene, CONFIG.CANVAS.width - 20, 12,
-        mode === 'bot' ? Renderer.TEAM_NAME.blue + '   bot' : Renderer.controlSummary('blue'), 13, C.dim)
+        mode === 'bot'
+          ? Renderer.TEAM_NAME.blue + '   ' + difficulty + ' bot'
+          : Renderer.controlSummary('blue'), 13, C.dim)
         .setOrigin(1, 0),
+      // Only a one-player match has a mouse scheme to swap, so only it is told about M.
       hint: Renderer.text(scene, cx, CONFIG.CANVAS.height - 24,
-        'P or ESC to pause', 13, C.dim).setOrigin(0.5, 0),
+        mode === 'bot'
+          ? 'P or ESC to pause    M for keys only'
+          : 'P or ESC to pause', 13, C.dim).setOrigin(0.5, 0),
     };
   },
 
@@ -415,7 +742,7 @@ const Renderer = {
 
   /* ----------------------------------------------------------- menu scene */
 
-  createMenu(scene) {
+  createMenu(scene, onPick) {
     const C = Renderer.CSS;
     const cx = CONFIG.CANVAS.width / 2;
 
@@ -428,62 +755,192 @@ const Renderer = {
     Renderer.centred(scene, 110, 'DRUNK FOOTBALL', 76);
     Renderer.centred(scene, 166, 'you know what you meant to do', 20, C.dim);
 
-    const red = CONFIG.CONTROLS.red;
-    const blue = CONFIG.CONTROLS.blue;
-    const rows = [
-      ['', Renderer.TEAM_NAME.red, Renderer.TEAM_NAME.blue],
-      ['Move', Renderer.moveKeys('red'), Renderer.moveKeys('blue')],
-      ['Pass', Renderer.keyLabel(red.pass), Renderer.keyLabel(blue.pass)],
-      ['Shoot', Renderer.keyLabel(red.shoot), Renderer.keyLabel(blue.shoot)],
-    ];
-    rows.forEach((row, i) => {
-      const y = 250 + i * 34;
-      const colour = i === 0 ? C.accent : C.hud;
-      const size = i === 0 ? 20 : 22;
-      Renderer.text(scene, cx - 250, y, row[0], size, colour).setDepth(Renderer.DEPTH.overlay);
-      Renderer.text(scene, cx - 20, y, row[1], size, colour).setOrigin(0.5, 0).setDepth(Renderer.DEPTH.overlay);
-      Renderer.text(scene, cx + 205, y, row[2], size, colour).setOrigin(0.5, 0).setDepth(Renderer.DEPTH.overlay);
-    });
+    Renderer.keyTable(scene, cx - 250, 250, 34, cx - 20, cx + 205, 22);
 
     Renderer.centred(scene, 420, 'Pass and Shoot only work when you have the ball.', 16, C.dim);
     Renderer.centred(scene, 446, 'Having the ball is no guarantee your legs agree.', 16, C.dim);
 
-    Renderer.centred(scene, 555, 'PRESS  1  FOR ONE PLAYER vs BOT', 30, C.accent);
-    Renderer.centred(scene, 600, 'PRESS  2  FOR TWO PLAYERS', 30, C.accent);
-    Renderer.centred(scene, 668,
+    Renderer.option(scene, 560, 'PLAY', 46, () => onPick(0));
+    Renderer.option(scene, 630, 'SETTINGS', 34, () => onPick(1));
+    Renderer.centred(scene, 692, 'click either, or press 1 and 2', 15, C.dim);
+  },
+
+  /* What kind of game. Everything the front screen used to offer, one step in. */
+  createPlay(scene, onPick) {
+    const C = Renderer.CSS;
+
+    scene.add.graphics()
+      .fillStyle(Renderer.PALETTE.surround, 1)
+      .fillRect(0, 0, CONFIG.CANVAS.width, CONFIG.CANVAS.height)
+      .fillStyle(Renderer.PALETTE.grass, 1)
+      .fillRect(0, 205, CONFIG.CANVAS.width, 290);
+
+    Renderer.centred(scene, 110, 'PLAY', 66);
+    Renderer.centred(scene, 166, 'three minutes, or straight to the spot', 20, C.dim);
+
+    Renderer.option(scene, 270, 'PRESS  1  ONE PLAYER vs BOT', 32, () => onPick(0));
+    Renderer.centred(scene, 302, 'you against a bot of your choosing', 16, C.dim);
+
+    Renderer.option(scene, 360, 'PRESS  2  TWO PLAYERS', 32, () => onPick(1));
+    Renderer.centred(scene, 392, 'both of you on the same keyboard', 16, C.dim);
+
+    Renderer.option(scene, 450, 'PRESS  3  PENALTY SHOOTOUT', 32, () => onPick(2));
+    Renderer.centred(scene, 482, 'no match first, straight to the spot', 16, C.dim);
+
+    Renderer.centred(scene, 570,
       'Match is ' + Math.round(CONFIG.MATCH.durationSec / 60) +
-      ' minutes. Level at full time goes to penalties.', 15, C.dim);
+      ' minutes. Level at full time goes to penalties.', 16, C.dim);
+    Renderer.centred(scene, 640, 'ESC  to go back', 22, C.dim);
+  },
+
+  /* Same furniture as the menu, so stepping between the two screens does not move the
+   * title or the green band under your eye. */
+  createDifficulty(scene, onPick) {
+    const C = Renderer.CSS;
+
+    scene.add.graphics()
+      .fillStyle(Renderer.PALETTE.surround, 1)
+      .fillRect(0, 0, CONFIG.CANVAS.width, CONFIG.CANVAS.height)
+      .fillStyle(Renderer.PALETTE.grass, 1)
+      .fillRect(0, 205, CONFIG.CANVAS.width, 290);
+
+    Renderer.centred(scene, 110, 'CHOOSE YOUR OPPONENT', 60);
+    Renderer.centred(scene, 166, 'one player vs bot', 20, C.dim);
+
+    // Driven off CONFIG.BOT.order so the numbers on screen cannot drift from the
+    // numbers the scene actually reads.
+    CONFIG.BOT.order.forEach((level, i) => {
+      const y = 258 + i * 90;
+      Renderer.option(scene, y, 'PRESS  ' + (i + 1) + '  ' + level.toUpperCase(), 32, () => onPick(i));
+      Renderer.centred(scene, y + 32, Renderer.DIFFICULTY_BLURB[level], 16, C.dim);
+    });
+
+    Renderer.centred(scene, 570, 'Every bot is exactly as drunk as you are. Only its judgement changes.', 16, C.dim);
+    Renderer.centred(scene, 640, 'ESC  to go back', 22, C.dim);
+  },
+
+  /*
+   * Everything the skins drawer used to hold, plus the mouse setting, laid out as a column
+   * rather than a panel. One list in one place beats the same list in two.
+   */
+  createSettings(scene, state, handlers) {
+    const C = Renderer.CSS;
+    const cx = CONFIG.CANVAS.width / 2;
+    const nameX = cx - 320;
+    const blurbX = cx - 100;
+    const swatchX = cx + 300;
+
+    scene.add.graphics()
+      .fillStyle(Renderer.PALETTE.surround, 1)
+      .fillRect(0, 0, CONFIG.CANVAS.width, CONFIG.CANVAS.height)
+      .fillStyle(Renderer.PALETTE.grass, 1)
+      .fillRect(0, 205, CONFIG.CANVAS.width, 395);   // deep enough for the key table
+
+    Renderer.centred(scene, 110, 'SETTINGS', 66);
+    Renderer.centred(scene, 166, 'kept between sessions', 20, C.dim);
+
+    Renderer.text(scene, nameX, 226, 'SKIN', 18, C.accent).setDepth(Renderer.DEPTH.overlay);
+
+    Renderer.SKINS.forEach((skin, i) => {
+      const y = 258 + i * 34;
+      const current = skin.key === Renderer.activeSkin;
+      if (current) {
+        Renderer.text(scene, nameX - 26, y, '>', 20, C.hud)
+          .setOrigin(0, 0.5).setDepth(Renderer.DEPTH.overlay);
+      }
+      Renderer.optionAt(scene, nameX, y, (i + 1) + '   ' + skin.name, 22,
+        () => handlers.skin(skin.key), current ? C.hud : C.accent);
+      Renderer.text(scene, blurbX, y, skin.blurb, 14, C.dim)
+        .setOrigin(0, 0.5).setDepth(Renderer.DEPTH.overlay);
+      // Each swatch gets a dark backing, or a skin whose grass matches the band behind it
+      // appears to be missing one.
+      [skin.colours.red, skin.colours.blue, skin.colours.grass].forEach((colour, j) => {
+        scene.add.image(swatchX + j * 28, y, 'px')
+          .setDisplaySize(26, 26).setTint(Renderer.PALETTE.outline)
+          .setDepth(Renderer.DEPTH.overlay);
+        scene.add.image(swatchX + j * 28, y, 'px')
+          .setDisplaySize(22, 22).setTint(colour).setDepth(Renderer.DEPTH.overlay);
+      });
+    });
+
+    Renderer.text(scene, nameX, 400, 'CONTROLS', 18, C.accent).setDepth(Renderer.DEPTH.overlay);
+
+    // Further right than the skin blurbs, because this label is a good deal wider.
+    Renderer.optionAt(scene, nameX, 430,
+      'M   MOUSE CLICKS   ' + (state.mouseClicks ? 'ON' : 'OFF'), 22, handlers.mouse);
+    Renderer.text(scene, cx - 10, 430,
+      'left click passes, right click shoots, one player only', 14, C.dim)
+      .setOrigin(0, 0.5).setDepth(Renderer.DEPTH.overlay);
+
+    // The keys themselves, read straight out of CONFIG.CONTROLS so a remap can never
+    // leave this screen telling you something the game no longer does.
+    Renderer.keyTable(scene, nameX, 466, 30, nameX + 230, nameX + 410, 20);
+
+    // Under the settings rather than among them, because it is not one: it leaves for a
+    // different build of the game entirely.
+    Renderer.option(scene, 640, 'LEGACY MODE', 28, handlers.legacy);
+    Renderer.centred(scene, 670,
+      'the game as it was when blue shot with - and =', 14, C.dim);
+
+    Renderer.centred(scene, 700, 'ESC  to go back', 20, C.dim);
+  },
+
+  /* Same furniture again, so the three menus feel like one screen changing its mind. */
+  createPenaltyMode(scene, onPick) {
+    const C = Renderer.CSS;
+
+    scene.add.graphics()
+      .fillStyle(Renderer.PALETTE.surround, 1)
+      .fillRect(0, 0, CONFIG.CANVAS.width, CONFIG.CANVAS.height)
+      .fillStyle(Renderer.PALETTE.grass, 1)
+      .fillRect(0, 205, CONFIG.CANVAS.width, 290);
+
+    Renderer.centred(scene, 110, 'PENALTY SHOOTOUT', 60);
+    Renderer.centred(scene, 166, 'no match first, straight to the spot', 20, C.dim);
+
+    Renderer.option(scene, 290, 'PRESS  1  vs BOT', 32, () => onPick(0));
+    Renderer.centred(scene, 322, 'it picks a corner at random, exactly as you do', 16, C.dim);
+
+    Renderer.option(scene, 400, 'PRESS  2  TWO PLAYERS', 32, () => onPick(1));
+    Renderer.centred(scene, 432, 'take it in turns, both of you pick your own corner', 16, C.dim);
+
+    Renderer.centred(scene, 570,
+      CONFIG.PENALTY.kicksEach + ' kicks each, then sudden death.', 16, C.dim);
+    Renderer.centred(scene, 640, 'ESC  to go back', 22, C.dim);
   },
 
   /* -------------------------------------------------------- penalty scene */
 
+  /*
+   * Staged on the match pitch at blue's goal rather than on a diagram of its own, so the
+   * stripes, boxes and corner arcs carry straight over from the match. The right-hand
+   * third of the pitch does the work, which leaves the empty half for the wording.
+   */
   createPenaltyView(scene, geom) {
     const C = Renderer.CSS;
     const P = Renderer.PALETTE;
+    const PITCH = CONFIG.PITCH;
+    const textX = PITCH.left + 380;      // clear of the far penalty box and the centre circle
 
-    const g = scene.add.graphics().setDepth(Renderer.DEPTH.pitch);
-    g.fillStyle(P.surround, 1).fillRect(0, 0, CONFIG.CANVAS.width, CONFIG.CANVAS.height);
-    g.fillStyle(P.grass, 1).fillRect(0, geom.fieldTop, CONFIG.CANVAS.width, geom.fieldHeight);
-    g.fillStyle(P.net, 1).fillRect(geom.goalLineX, geom.mouthTop, geom.goalDepth, geom.mouthHeight);
-    g.lineStyle(3, P.line, 1);
-    g.strokeRect(0, geom.fieldTop, CONFIG.CANVAS.width, geom.fieldHeight);
-    g.strokeCircle(geom.spotX, geom.spotY, 70);
+    const g = Renderer.createPitch(scene);
+
+    // The penalty spot, the one marking the match pitch has no reason to carry.
     g.fillStyle(P.line, 1).fillCircle(geom.spotX, geom.spotY, 5);
-    g.lineStyle(5, P.line, 1);
-    g.lineBetween(geom.goalLineX, geom.mouthTop, geom.goalLineX + geom.goalDepth, geom.mouthTop);
-    g.lineBetween(geom.goalLineX, geom.mouthBottom, geom.goalLineX + geom.goalDepth, geom.mouthBottom);
 
-    Renderer.centred(scene, 40, 'PENALTY SHOOTOUT', 44);
+    Renderer.centred(scene, 22, 'PENALTY SHOOTOUT', 40);
 
     // Number the thirds, otherwise 1/2/3 is a guess rather than a choice.
     CONFIG.PENALTY.thirds.forEach((third, i) => {
       Renderer.text(scene, geom.goalLineX + geom.goalDepth / 2, geom.thirdY[third],
-        String(i + 1), 30, C.accent).setOrigin(0.5).setDepth(Renderer.DEPTH.pitch + 1);
+        String(i + 1), 26, C.accent).setOrigin(0.5).setDepth(Renderer.DEPTH.pitch + 1);
     });
 
-    const taker = scene.add.image(geom.spotX - 54, geom.spotY, 'player_red')
+    const taker = scene.add.image(geom.spotX - geom.takerOffsetX, geom.spotY, 'player_red')
       .setDepth(Renderer.DEPTH.player);
     taker.setOrigin(CONFIG.PLAYER.radius / taker.width, 0.5);
+
+    const centredAt = (x, y, size, colour) =>
+      Renderer.text(scene, x, y, '', size, colour).setOrigin(0.5).setDepth(Renderer.DEPTH.overlay);
 
     return {
       geom,
@@ -491,12 +948,13 @@ const Renderer = {
       keeper: scene.add.image(geom.goalLineX - CONFIG.KEEPER.lineInset, geom.spotY, 'keeper_blue')
         .setDepth(Renderer.DEPTH.keeper),
       ball: scene.add.image(geom.spotX, geom.spotY, 'ball').setDepth(Renderer.DEPTH.ball),
-      prompt: Renderer.centred(scene, 540, '', 30, C.accent),
-      result: Renderer.centred(scene, 588, '', 36),
-      tallyRed: Renderer.text(scene, 60, 616, '', 24, C.red),
-      tallyBlue: Renderer.text(scene, 60, 652, '', 24, C.blue),
-      score: Renderer.text(scene, CONFIG.CANVAS.width - 60, 612, '', 32).setOrigin(1, 0),
-      round: Renderer.text(scene, CONFIG.CANVAS.width - 60, 656, '', 17, C.dim).setOrigin(1, 0),
+      // Stacked above and below the centre circle, never across it.
+      score: centredAt(textX, 150, 32),
+      round: centredAt(textX, 192, 17, C.dim),
+      tallyRed: Renderer.text(scene, textX - 120, 240, '', 24, C.red).setDepth(Renderer.DEPTH.overlay),
+      tallyBlue: Renderer.text(scene, textX - 120, 276, '', 24, C.blue).setDepth(Renderer.DEPTH.overlay),
+      prompt: centredAt(textX, 520, 28, C.accent),
+      result: centredAt(textX, 575, 34),
     };
   },
 
@@ -538,7 +996,7 @@ const Renderer = {
     const geom = view.geom;
     view.taker.setTexture(team === 'red' ? 'player_red' : 'player_blue');
     view.taker.setOrigin(CONFIG.PLAYER.radius / view.taker.width, 0.5);
-    view.taker.setAngle(0).setPosition(geom.spotX - 54, geom.spotY);
+    view.taker.setAngle(0).setPosition(geom.spotX - geom.takerOffsetX, geom.spotY);
     view.keeper.setTexture(team === 'red' ? 'keeper_blue' : 'keeper_red');
     view.keeper.setPosition(geom.goalLineX - CONFIG.KEEPER.lineInset, geom.spotY);
     view.ball.setScale(1).setPosition(geom.spotX, geom.spotY);
@@ -599,17 +1057,26 @@ const Renderer = {
       .fillStyle(Renderer.PALETTE.grass, 1)
       .fillRect(0, 200, CONFIG.CANVAS.width, 300);
 
-    Renderer.centred(scene, 150, 'FULL TIME', 60, C.dim);
+    // A shootout on its own has no match behind it, so it gets its own heading and a
+    // scoreline that is only the penalties.
+    const standalone = !result.scores;
+
+    Renderer.centred(scene, 150, standalone ? 'SHOOTOUT OVER' : 'FULL TIME', 60, C.dim);
     Renderer.centred(scene, 268,
       result.winner ? Renderer.TEAM_NAME[result.winner] + ' WINS' : 'HONOURS EVEN', 88, winnerColour);
 
-    let scoreline = result.scores.red + ' - ' + result.scores.blue;
-    if (result.penalties) {
-      scoreline += '  (' + result.penalties.red + ' - ' + result.penalties.blue + ' on penalties)';
+    let scoreline;
+    if (standalone) {
+      scoreline = result.penalties.red + ' - ' + result.penalties.blue + '  on penalties';
+    } else {
+      scoreline = result.scores.red + ' - ' + result.scores.blue;
+      if (result.penalties) {
+        scoreline += '  (' + result.penalties.red + ' - ' + result.penalties.blue + ' on penalties)';
+      }
     }
     Renderer.centred(scene, 366, scoreline, 44);
 
-    Renderer.centred(scene, 570, 'SPACE  rematch', 30, C.accent);
+    Renderer.centred(scene, 570, standalone ? 'SPACE  shoot again' : 'SPACE  rematch', 30, C.accent);
     Renderer.centred(scene, 612, 'M  menu', 30, C.accent);
   },
 };
