@@ -1,0 +1,3 @@
+# Worktrees the harness creates live inside the repo. Without this a git add -A
+# from the main checkout would commit an entire second copy of the project.
+.claude/worktrees/
