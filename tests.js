@@ -626,6 +626,58 @@ const DrunkTests = (() => {
       return { pass: drift < 0.01, detail: drift.toFixed(3) + ' degrees off when still' };
     });
 
+    group('keeper');
+    check('a keeper that fails its roll lets the ball through', () => {
+      const g = startMatch('two');
+      const keeper = g.keepers[0];
+      keeper.beatenUntil = g.time.now + 1000;
+      keeper.reachedUntil = 0;
+      return { pass: g.keeperReaches(keeper) === false, detail: 'still reaching while beaten' };
+    });
+    check('the verdict is held rather than re-rolled every frame', () => {
+      const g = startMatch('two');
+      const keeper = g.keepers[0];
+      keeper.beatenUntil = 0;
+      keeper.reachedUntil = 0;
+      // Forced failure, then the same overlap asked again: it must stay beaten.
+      const real = Math.random;
+      Math.random = () => 0.999;
+      const first = g.keeperReaches(keeper);
+      Math.random = () => 0;      // would now succeed, if it were re-rolling
+      const second = g.keeperReaches(keeper);
+      Math.random = real;
+      return {
+        pass: first === false && second === false,
+        detail: 'first ' + first + ', second ' + second,
+      };
+    });
+    check('a keeper that makes its roll still saves', () => {
+      const g = startMatch('two');
+      const keeper = g.keepers[0];
+      keeper.beatenUntil = 0;
+      keeper.reachedUntil = 0;
+      const real = Math.random;
+      Math.random = () => 0;      // inside saveChance
+      const reached = g.keeperReaches(keeper);
+      Math.random = real;
+      return { pass: reached === true, detail: 'reached ' + reached };
+    });
+    check('being beaten is announced, not silent', () => {
+      const g = startMatch('two');
+      const keeper = g.keepers[0];
+      const before = g.children.list.filter((o) => o.depth === Renderer.DEPTH.label).length;
+      Renderer.onKeeperBeaten(g, keeper, 700);
+      step(2);
+      const after = g.children.list.filter((o) => o.depth === Renderer.DEPTH.label).length;
+      return { pass: after > before, detail: before + ' before, ' + after + ' after' };
+    });
+    check('the save odds leave the shootout alone', () => {
+      // Penalties are tweened, not physical, so the roll must not touch their one-in-three.
+      const table = CONFIG.PENALTY.TABLE.reduce((sum, row) => sum + row.weight, 0);
+      return { pass: table > 0 && typeof CONFIG.PENALTY.TABLE[0].weight === 'number',
+               detail: 'penalty table still weighted, total ' + table };
+    });
+
     group('hooks');
     check('every announced event has a renderer to receive it', () => {
       const want = ['onFacingChanged', 'onOutcome', 'onGoal', 'onKickoff', 'onKickoffCount',

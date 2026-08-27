@@ -1283,6 +1283,64 @@ const Renderer = {
     }
   },
 
+  /*
+   * A ball going straight through the keeper needs saying out loud, or it reads as the
+   * ball glitching through a solid object rather than the keeper being beaten. The keeper
+   * flails the wrong way, which is both the explanation and the joke.
+   */
+  KEEPER_BEATEN_LABELS: [
+    'THROUGH HIM!', 'WRONG WAY!', 'NOT A FINGER ON IT', 'DIVED EARLY',
+    'STATUESQUE', 'WAVED IT IN', 'AFTER YOU',
+  ],
+
+  onKeeperBeaten(scene, keeper, speed) {
+    if (!Renderer.JUICE.outcomeLabels.on) return;
+
+    const J = Renderer.JUICE.outcomeLabels;
+    const phrase = Renderer.KEEPER_BEATEN_LABELS[
+      Phaser.Math.Between(0, Renderer.KEEPER_BEATEN_LABELS.length - 1)];
+
+    const label = Renderer.display(scene, keeper.sprite.x, keeper.sprite.y - 52, phrase,
+      J.size * 0.62, Renderer.hex(Renderer.lighten(Renderer.THEME.redTeam, 0.25)))
+      .setOrigin(0.5)
+      .setDepth(Renderer.DEPTH.label)
+      .setAngle(Phaser.Math.Between(-J.tiltDeg, J.tiltDeg))
+      .setScale(0.4);
+
+    // Thrown from a goalmouth, so it needs pulling back onto the screen.
+    const half = label.displayWidth / 2;
+    label.x = Phaser.Math.Clamp(label.x, half + 12, CONFIG.CANVAS.width - half - 12);
+
+    scene.tweens.add({
+      targets: label,
+      scale: 1,
+      duration: J.overshootMs,
+      ease: 'Back.easeOut',
+      onComplete: () => {
+        scene.tweens.add({
+          targets: label,
+          y: label.y - 26,
+          alpha: 0,
+          delay: J.holdMs,
+          duration: CONFIG.FEEDBACK.labelMs,
+          onComplete: () => label.destroy(),
+        });
+      },
+    });
+
+    // A dive at nothing, away from where the ball actually went.
+    if (Renderer.JUICE.faceplant.on) {
+      const upright = keeper.sprite.rotation;
+      scene.tweens.add({
+        targets: keeper.sprite,
+        rotation: upright + Phaser.Math.DegToRad(Phaser.Math.Between(20, 38)),
+        duration: 180,
+        yoyo: true,
+        ease: 'Quad.easeOut',
+      });
+    }
+  },
+
   /* A keeper hoofing it clear is a kick like any other, so it gets the same recoil. */
   onKeeperClear(scene, keeper, mate) {
     const J = Renderer.JUICE.squashStretch;
