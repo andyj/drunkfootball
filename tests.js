@@ -2696,17 +2696,20 @@ const DrunkTests = (() => {
        * fill that quietly stopped being stripes would still be a circle of the right size
        * in the right place, and nothing else would notice.
        */
-      const rr = Renderer.REFEREE.radius;
+      const outer = Renderer.refereeOuter();
       const row = [];
-      for (let x = 0; x < rr * 2; x += 1) {
-        const c = window.game.textures.getPixel(x, rr, 'referee');
+      for (let x = 0; x < outer * 2; x += 1) {
+        const c = window.game.textures.getPixel(x, outer, 'referee');
         if (c && c.alpha > 0) row.push((c.red + c.green + c.blue) / 3 > 128 ? 'W' : 'B');
       }
       const changes = row.filter((shade, i) => i > 0 && shade !== row[i - 1]).length;
       const white = row.filter((shade) => shade === 'W').length;
+      // And the ring: whatever the stripes are doing, both edges of him are white.
+      const ringed = row[0] === 'W' && row[row.length - 1] === 'W';
       return {
-        pass: changes >= 4 && white > 3 && white < row.length - 3,
-        detail: row.join('') + ', ' + changes + ' changes across him',
+        pass: changes >= 4 && white > 3 && white < row.length - 3 && ringed,
+        detail: row.join('') + ', ' + changes + ' changes across him'
+          + (ringed ? ' inside a white ring' : ' and no ring'),
       };
     });
     check('he keeps out of everything the HUD writes', () => {

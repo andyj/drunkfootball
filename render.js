@@ -271,6 +271,7 @@ const Renderer = {
   REFEREE: {
     radius: 9,
     stripePx: 3.5,         // wide enough to read as stripes at nine pixels across
+    haloPx: 3,             // and a white ring round the outside, so he can be found
     fromCentre: 66,        // along the line from the halfway line, clear of both
     offLine: 12,           // how far outside the touchline he stands
     blowScale: 1.35,       // the puff he gives it
@@ -730,34 +731,39 @@ const Renderer = {
 
     /*
      * The referee, seen from above: the same blob as a supporter, in the one kit nobody
-     * else in the ground is wearing. Black and white stripes, which is the referee's own,
-     * and the white in them is what keeps him visible against a dark surround where a
-     * black figure would disappear.
+     * else in the ground is wearing. Black and white stripes, which is the referee's own.
+     *
+     * Built out from the middle in rings: a white one round the outside so he can be
+     * picked out of a dark surround and a brown stand at a glance, a dark rim inside that
+     * to draw him, and the striped shirt inside that.
      */
     const rr = Renderer.REFEREE.radius;
     const stripe = Renderer.REFEREE.stripePx;
-    bake('referee', rr * 2, rr * 2, () => {
+    const outer = Renderer.refereeOuter();
+    const shirt = rr - 2;
+    bake('referee', outer * 2, outer * 2, () => {
       g.fillStyle(Renderer.THEME.chalkWhite, 1);
-      g.fillCircle(rr, rr, rr - 1);
+      g.fillCircle(outer, outer, outer);
+      g.fillStyle(P.outline, 1);
+      g.fillCircle(outer, outer, rr);
+      g.fillStyle(Renderer.THEME.chalkWhite, 1);
+      g.fillCircle(outer, outer, shirt);
 
       /*
-       * The stripes, a column at a time, each as tall as the circle is at that point. A
+       * The stripes, a column at a time, each as tall as the shirt is at that point. A
        * rectangle laid across a circle has corners, and a referee with corners is a brick.
        * Rounded about the middle so the pattern is the same either side of him, and white
        * down the middle so the dark rim has a stripe of its own either side of it rather
        * than a black band merging into it.
        */
       g.fillStyle(P.outline, 1);
-      for (let x = 0; x < rr * 2; x += 1) {
-        const dx = x + 0.5 - rr;
+      for (let x = outer - shirt; x < outer + shirt; x += 1) {
+        const dx = x + 0.5 - outer;
         if (Math.round(dx / stripe) % 2 !== 0) {
-          const h = Math.sqrt(Math.max(0, (rr - 1) * (rr - 1) - dx * dx));
-          if (h > 0.5) g.fillRect(x, rr - h, 1, h * 2);
+          const h = Math.sqrt(Math.max(0, shirt * shirt - dx * dx));
+          if (h > 0.5) g.fillRect(x, outer - h, 1, h * 2);
         }
       }
-
-      g.lineStyle(2, P.outline, 1);
-      g.strokeCircle(rr, rr, rr - 1);
     });
 
     // The ring marking whoever has the ball. Baked hollow so the player still reads
@@ -1487,13 +1493,18 @@ const Renderer = {
     return { x: t.x, y: Math.min(t.mouth, t.back) + r };
   },
 
+  /* How much of the screen he takes up, ring and all. */
+  refereeOuter() {
+    return Renderer.REFEREE.radius + Renderer.REFEREE.haloPx;
+  },
+
   /* On the touchline, whatever the ground: every one of them has a touchline. */
   refereeSpot() {
     const P = CONFIG.PITCH;
     const R = Renderer.REFEREE;
     return {
       x: P.centreX + R.fromCentre,
-      y: P.top - R.offLine - R.radius,
+      y: P.top - R.offLine - Renderer.refereeOuter(),
     };
   },
 
