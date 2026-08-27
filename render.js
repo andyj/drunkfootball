@@ -359,6 +359,76 @@ const Renderer = {
    * ball can go, which is exactly why it lives here rather than in CONFIG.PITCH. Sizes
    * are eyeballed against the 1120x600 playing area, not scaled from real yardages.
    */
+  /*
+   * The pitch itself, rather than the mowing. A few hundred short strokes, half of them a
+   * shade lighter than the band they stand in and half a shade darker, leaning whichever
+   * way they feel like: from above that reads as grass instead of paint. Drawn once into
+   * the pitch's own graphics, so it costs a few hundred lines when the match is built and
+   * nothing at all per frame, and grouped by band and shade so it is two dozen style
+   * changes rather than nine hundred.
+   */
+  GRASS: {
+    perBand: 220,
+    lengthMin: 4,
+    lengthMax: 11,
+    lean: 5,
+    lift: 0.2,               // how much lighter the light blades are than their band
+    sink: 0.17,              // and how much darker the dark ones
+    alpha: 0.6,
+  },
+
+  /*
+   * Snow lying on a frozen pitch. Stippled rather than painted: a patch is a scatter of
+   * specks, thick in the middle and thinning out to nothing, because a translucent blob is
+   * a translucent blob and half a dozen of them overlapping is a tray of soap bubbles.
+   * Laid under the chalk, so the lines stay readable however deep it gets.
+   */
+  LYING_SNOW: {
+    patches: 22,
+    radiusMin: 26,
+    radiusMax: 64,
+    coreMin: 4,              // opaque blobs making the solid middle of a drift
+    coreMax: 7,
+    specksMin: 70,
+    specksMax: 150,
+    speckMin: 1,
+    speckMax: 3.4,
+    /* And a dusting over everything else, so no part of it looks swept. */
+    dusting: 380,
+  },
+
+  /*
+   * And snow still coming down, on the matches that get weather. Each flake falls on a
+   * tween rather than off the clock, so it keeps falling in the shootout too, where
+   * nothing calls onTick.
+   */
+  SNOW: {
+    flakes: 70,
+    radiusMin: 1.2,
+    radiusMax: 2.8,
+    speedMin: 90,            // px a second
+    speedMax: 210,
+    driftMax: 40,            // and how far sideways it gets on the way down
+    alphaMin: 0.5,
+    alphaMax: 0.95,
+  },
+  /* Whether it is snowing on the match being played, rolled when the pitch is drawn. */
+  snowing: false,
+
+  /*
+   * What a kick takes out of a park pitch. Mud is mud whatever the kits are, the same way
+   * a brick stand is brick: none of this comes off the skin.
+   */
+  WEAR_MARK: {
+    mud: 0x4a3a26,
+    scuffs: 3,
+    spread: 15,              // how far the studs throw it about
+    lengthMin: 3,
+    lengthMax: 9,
+    alpha: 0.55,
+    divotRadius: 4,
+  },
+
   MARKINGS: {
     stripes: 10,             // mown bands running goal to goal
     penaltyDepth: 130,
@@ -498,6 +568,8 @@ const Renderer = {
       key: 'frozen',
       name: 'FROZEN',
       blurb: 'frost underfoot, everything slides a bit further',
+      /* The only skin with weather. Snow lies on it always and falls on some of it. */
+      snowy: true,
       colours: {
         pitchGreen: 0x7f9c88, stripe: 0x8caa95, chalkWhite: 0xffffff,
         redTeam: 0xc0392b, blueTeam: 0x2c5fa8,
@@ -656,7 +728,7 @@ const Renderer = {
    * has made a single sprite. Changing a skin therefore means: apply, restart, done.
    */
   PALETTE_DEPENDENT_TEXTURES: [
-    'player_red', 'player_blue', 'keeper_red', 'keeper_blue', 'ball', 'referee',
+    'player_red', 'player_blue', 'keeper_red', 'keeper_blue', 'ball', 'referee', 'flake',
   ],
   paletteVersion: 0,
   bakedVersion: -1,
@@ -764,6 +836,12 @@ const Renderer = {
           if (h > 0.5) g.fillRect(x, outer - h, 1, h * 2);
         }
       }
+    });
+
+    // A snowflake, which at this size is a dot and is drawn as one.
+    bake('flake', 8, 8, () => {
+      g.fillStyle(Renderer.THEME.chalkWhite, 1);
+      g.fillCircle(4, 4, 3.5);
     });
 
     // The ring marking whoever has the ball. Baked hollow so the player still reads
@@ -1116,6 +1194,12 @@ const Renderer = {
     const C = Renderer.PALETTE;
     const g = scene.add.graphics().setDepth(Renderer.DEPTH.pitch);
 
+    // Both of these belong to the match about to be played, and a scene handed back by
+    // Phaser is the same object as last time: anything left lying about is a reference to
+    // a sprite that was destroyed with the match before it.
+    scene.wearLayer = null;
+    Renderer.rollWeather();
+
     g.fillStyle(C.surround, 1);
     g.fillRect(0, 0, CONFIG.CANVAS.width, CONFIG.CANVAS.height);
 
@@ -1141,6 +1225,12 @@ const Renderer = {
     for (let i = 1; i < M.stripes; i += 2) {
       g.fillRect(P.left + i * bandWidth, P.top, bandWidth, P.height);
     }
+
+    // The grass itself, and the snow lying in it. Both under the chalk, so a line is a
+    // line however deep the snow is.
+    Renderer.drawGrass(g);
+    const skin = Renderer.skinNow();
+    if (skin && skin.snowy) Renderer.drawLyingSnow(g);
 
     // The netting behind each line, laid down before the chalk so the goal line is drawn
     // over the front of it rather than stopping short of it.
@@ -1186,7 +1276,182 @@ const Renderer = {
 
     // Last, so the night falls over a ground that is already fully drawn.
     Renderer.createFloodlights(scene, g);
+    Renderer.createSnow(scene);
 
+    return g;
+  },
+
+  /* The skin being played in, as its own entry rather than its key. */
+  skinNow() {
+    return Renderer.SKINS.find((sk) => sk.key === Renderer.activeSkin) || null;
+  },
+
+  /* Grass, a blade at a time, band by band so each shade is set once. */
+  drawGrass(g) {
+    const P = CONFIG.PITCH;
+    const G = Renderer.GRASS;
+    const C = Renderer.PALETTE;
+    const bands = Renderer.MARKINGS.stripes;
+    const bandWidth = P.width / bands;
+    const each = Math.round(G.perBand / 2);
+
+    for (let band = 0; band < bands; band += 1) {
+      const base = band % 2 ? C.grassAlt : C.grass;
+      const left = P.left + band * bandWidth;
+      [Renderer.lighten(base, G.lift), Renderer.darken(base, G.sink)].forEach((colour) => {
+        g.lineStyle(1, colour, G.alpha);
+        for (let i = 0; i < each; i += 1) {
+          const x = left + Math.random() * bandWidth;
+          // Grown up from its own root, and kept off the touchline: a blade leaning over
+          // the line is a blade growing out of the surround.
+          const y = P.top + G.lengthMax + Math.random() * (P.height - G.lengthMax);
+          const len = G.lengthMin + Math.random() * (G.lengthMax - G.lengthMin);
+          // Held inside the touchline: a blade leaning over the line is a blade growing
+          // out of the surround, and at the far end of the pitch that is where it leans.
+          const tip = Math.min(P.right, Math.max(P.left, x + (Math.random() - 0.5) * G.lean));
+          g.lineBetween(x, y, tip, y - len);
+        }
+      });
+    }
+  },
+
+  /* And the snow lying on top of it, on the one skin played in winter. */
+  drawLyingSnow(g) {
+    const P = CONFIG.PITCH;
+    const S = Renderer.LYING_SNOW;
+
+    /*
+     * All of it opaque, and that is the whole trick: translucent white circles compound
+     * where they overlap, so every one of them shows its own edge and a patch of snow
+     * comes out as a tray of soap bubbles. Solid ones merge into one shape.
+     */
+    g.fillStyle(Renderer.THEME.chalkWhite, 1);
+
+    // One blob, held inside the touchline: snow drifted onto the surround would be snow
+    // lying on the wall.
+    const blob = (x, y, r) => g.fillCircle(
+      Math.min(P.right - r, Math.max(P.left + r, x)),
+      Math.min(P.bottom - r, Math.max(P.top + r, y)),
+      r,
+    );
+    const speck = (x, y) => blob(x, y, S.speckMin + Math.random() * (S.speckMax - S.speckMin));
+
+    for (let i = 0; i < S.patches; i += 1) {
+      const x = P.left + Math.random() * P.width;
+      const y = P.top + Math.random() * P.height;
+      const radius = S.radiusMin + Math.random() * (S.radiusMax - S.radiusMin);
+
+      // A solid middle, off-centre lumps of it, so the drift has a shape rather than an
+      // outline; then a fringe of specks thinning out past its edge.
+      const core = Math.round(S.coreMin + Math.random() * (S.coreMax - S.coreMin));
+      for (let j = 0; j < core; j += 1) {
+        const angle = Math.random() * Math.PI * 2;
+        const away = radius * 0.35 * Math.random();
+        blob(x + Math.cos(angle) * away, y + Math.sin(angle) * away,
+          radius * (0.16 + Math.random() * 0.16));
+      }
+
+      const specks = Math.round(S.specksMin + Math.random() * (S.specksMax - S.specksMin));
+      for (let j = 0; j < specks; j += 1) {
+        const angle = Math.random() * Math.PI * 2;
+        const away = radius * (0.5 + Math.random() * 0.8);
+        speck(x + Math.cos(angle) * away, y + Math.sin(angle) * away);
+      }
+    }
+
+    for (let i = 0; i < S.dusting; i += 1) {
+      speck(P.left + Math.random() * P.width, P.top + Math.random() * P.height);
+    }
+  },
+
+  /*
+   * Weather, rolled once when the pitch is drawn, the same way the ground is. Only the
+   * frozen skin has any: everything else is played in whatever it is played in.
+   *
+   * game.js reads the answer rather than the roll, because snow on ice is not ice and what
+   * you are playing on is its business.
+   */
+  rollWeather() {
+    const skin = Renderer.skinNow();
+    Renderer.snowing = !!(skin && skin.snowy) && Math.random() < CONFIG.WEATHER.snowChance;
+    return Renderer.snowing;
+  },
+
+  /*
+   * The flakes. Each one falls from wherever it starts to below the bottom of the screen
+   * and then goes round again from above the top, so the first second of a match has snow
+   * in the middle of it rather than a clear sky filling up.
+   */
+  createSnow(scene) {
+    scene.snow = null;
+    if (!Renderer.snowing) return null;
+
+    const S = Renderer.SNOW;
+    const flakes = [];
+    for (let i = 0; i < S.flakes; i += 1) {
+      const r = S.radiusMin + Math.random() * (S.radiusMax - S.radiusMin);
+      const flake = scene.add.image(
+        Math.random() * CONFIG.CANVAS.width,
+        Math.random() * CONFIG.CANVAS.height,
+        'flake',
+      )
+        .setDisplaySize(r * 2, r * 2)
+        .setAlpha(S.alphaMin + Math.random() * (S.alphaMax - S.alphaMin))
+        // In front of the football and behind anything written about it.
+        .setDepth(Renderer.DEPTH.label - 1);
+      flake.drift = (Math.random() - 0.5) * S.driftMax * 2;
+      flake.speed = S.speedMin + Math.random() * (S.speedMax - S.speedMin);
+      Renderer.snowFall(scene, flake, true);
+      flakes.push(flake);
+    }
+    scene.snow = flakes;
+    return flakes;
+  },
+
+  /* One flake's fall: the first one part way down, every one after it from the top. */
+  snowFall(scene, flake, first) {
+    const bottom = CONFIG.CANVAS.height + 8;
+    if (!first) flake.y = -8;
+    const fall = (bottom - flake.y) / flake.speed;
+    // Blown sideways on the way down, but not off the edge of the world: a flake that
+    // leaves the screen is a flake nobody sees again until its next lap.
+    const drift = Math.min(CONFIG.CANVAS.width, Math.max(0, flake.x + flake.drift * fall));
+    return scene.tweens.add({
+      targets: flake,
+      y: bottom,
+      x: drift,
+      duration: fall * 1000,
+      repeat: first ? 0 : -1,
+      onComplete: first ? () => Renderer.snowFall(scene, flake, false) : undefined,
+    });
+  },
+
+  /*
+   * A patch of ground giving up. Studs at the spot, a few of them, and a divot in the
+   * middle of it: the worse the ground already is, the more each kick throws about.
+   *
+   * The layer is made on the first kick that needs it, so a pitch nobody has torn up has
+   * nothing drawn on it at all.
+   */
+  onPitchWear(scene, x, y, level) {
+    const W = Renderer.WEAR_MARK;
+    if (!scene.wearLayer) {
+      scene.wearLayer = scene.add.graphics().setDepth(Renderer.DEPTH.pitch + 1);
+    }
+    const g = scene.wearLayer;
+    const spread = W.spread * (0.5 + level);
+
+    g.fillStyle(W.mud, W.alpha * (0.5 + level * 0.5));
+    g.fillCircle(x, y, W.divotRadius * (0.6 + level * 0.8));
+
+    g.lineStyle(2, W.mud, W.alpha);
+    for (let i = 0; i < W.scuffs; i += 1) {
+      const sx = x + (Math.random() - 0.5) * spread;
+      const sy = y + (Math.random() - 0.5) * spread;
+      const len = W.lengthMin + Math.random() * (W.lengthMax - W.lengthMin);
+      const angle = Math.random() * Math.PI;
+      g.lineBetween(sx, sy, sx + Math.cos(angle) * len, sy + Math.sin(angle) * len);
+    }
     return g;
   },
 
@@ -3110,15 +3375,17 @@ const Renderer = {
 
     Renderer.centredDisplay(scene, 110, 'SETTINGS', 72);
     /*
-     * Opened from a paused match, a new skin cannot repaint the match already drawn behind
+     * Opened from a paused match, a new mode cannot repaint the match already drawn behind
      * this screen, because it is using the textures baked for the old one. Saying so beats
-     * letting someone pick a skin and watch nothing happen.
+     * letting someone pick one and watch nothing happen.
      */
     Renderer.centred(scene, 172, state.inMatch
-      ? 'kept between sessions  ·  a new skin starts with the next match'
+      ? 'kept between sessions  ·  a new mode starts with the next match'
       : 'kept between sessions', 20, C.dim);
 
-    Renderer.text(scene, nameX, 220, 'SKIN', 18, C.accent).setDepth(Renderer.DEPTH.overlay);
+    // MODES on screen, skins in the code: the word the player reads is the only one that
+    // has to change, and renaming a hundred references would be a diff about nothing.
+    Renderer.text(scene, nameX, 220, 'MODES', 18, C.accent).setDepth(Renderer.DEPTH.overlay);
 
     const L = Renderer.SETTINGS_LAYOUT;
     // The cursor holds the last thing drawn, so everything below places itself off it.
@@ -3199,7 +3466,7 @@ const Renderer = {
     const ground = Renderer.STADIUMS.find((st) => st.key === Renderer.stadiumChoice);
     row(owned ? 'G   STADIUM   ' + owned.name
       : 'G   STADIUM   ' + Renderer.stadiumChoice.toUpperCase(),
-    owned ? owned.blurb + ', and nothing else for this skin'
+    owned ? owned.blurb + ', and nothing else for this mode'
       : (ground ? ground.blurb : 'a different ground every match'),
     handlers.stadium);
 

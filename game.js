@@ -67,11 +67,36 @@ const CONFIG = {
    * frame, so 1 is the instant response the game has always had and anything less slides.
    * ballDragScale multiplies BALL.drag, which stays the single source for how a ball rolls.
    */
+  /*
+   * What you are playing on. grip is how much of a change of direction happens at once,
+   * ballDragScale is how hard the ground is on a rolling ball, and wears says the ground
+   * gives up where it is played on.
+   */
   SURFACES: {
     grass: { grip: 1, ballDragScale: 1 },
     ice: { grip: 0.12, ballDragScale: 0.55 },
+    /* Ice with snow coming down on it: still slippery, but it grabs a little. */
+    snow: { grip: 0.34, ballDragScale: 0.78 },
+    /* A park pitch. Starts as grass and gets worse everywhere the ball is kicked. */
+    mud: { grip: 1, ballDragScale: 1, wears: true },
   },
-  SURFACE_BY_SKIN: { frozen: 'ice' },
+  SURFACE_BY_SKIN: { frozen: 'ice', sunday: 'mud' },
+
+  /* Frozen is the only skin with weather, and it snows on one match in three. */
+  WEATHER: { snowChance: 1 / 3 },
+
+  /*
+   * What a kick takes out of a park pitch. Every swing tears a bit more out of the ground
+   * it was taken from and a little out of the ground around it, and a ball rolling through
+   * the churn afterwards is a ball rolling through churn: by full time the middle of a
+   * Sunday League match is a bog, and only where it was actually played.
+   */
+  WEAR: {
+    cellPx: 56,
+    perKick: 0.3,
+    spread: 0.1,            // and this much into each of the four cells around it
+    dragScale: 2.2,         // how much harder fully churned ground is than fresh grass
+  },
 
   KICK: {
     passPower: 420,
@@ -1032,8 +1057,21 @@ class GameScene extends Phaser.Scene {
     this.difficulty = CONFIG.BOT.LEVELS[asked] ? asked : CONFIG.BOT.defaultLevel;
     this.botCfg = CONFIG.BOT.LEVELS[this.difficulty];
 
-    // The chosen skin decides what you are playing on. Anything unmapped is grass.
-    this.surface = CONFIG.SURFACES[CONFIG.SURFACE_BY_SKIN[Renderer.activeSkin]]
+    /*
+     * The chosen skin decides what you are playing on, and it is decided again in create
+     * once the weather has been rolled. Set here as well because a scene can be asked
+     * about its surface before its pitch exists.
+     */
+    this.surface = this.surfaceNow();
+  }
+
+  /*
+   * Anything unmapped is grass. Snow is the exception that is not the skin's: it is rolled
+   * with the pitch, and snow lying on ice is not ice.
+   */
+  surfaceNow() {
+    if (Renderer.snowing) return CONFIG.SURFACES.snow;
+    return CONFIG.SURFACES[CONFIG.SURFACE_BY_SKIN[Renderer.activeSkin]]
       || CONFIG.SURFACES.grass;
   }
 
@@ -1042,6 +1080,9 @@ class GameScene extends Phaser.Scene {
 
     Renderer.beginScene(this);
     Renderer.createPitch(this);
+    // After the pitch, because drawing it is what rolls the weather.
+    this.surface = this.surfaceNow();
+    this.wear = this.surface.wears ? this.freshPitch() : null;
 
     this.physics.world.setBounds(0, 0, CONFIG.CANVAS.width, CONFIG.CANVAS.height);
     this.pitchBounds = new Phaser.Geom.Rectangle(P.left, P.top, P.width, P.height);
@@ -1278,6 +1319,12 @@ class GameScene extends Phaser.Scene {
   }
 
   updatePlay(time, delta) {
+    // The ball is dragged by the ground it is on rather than by the ground in general, so
+    // this is asked again every frame on a pitch that wears.
+    if (this.wear) {
+      const drag = this.ballDragNow();
+      this.ball.body.setDrag(drag, drag);
+    }
     this.readInput(time);
     this.players.forEach((p) => this.movePlayer(p, time));
     this.keepers.forEach((k) => this.updateKeeper(k, time));
@@ -1654,6 +1701,10 @@ class GameScene extends Phaser.Scene {
     if (this.state.owner !== player) return;   // no possession, the press is ignored
     if (now < player.stunnedUntil) return;
 
+    // Every swing takes something out of the ground it was taken from, whether or not it
+    // connects with anything. A whiff is a divot too.
+    this.tearPitch(player.sprite.x, player.sprite.y);
+
     const outcome = rollOutcome(this.drunkTable(player));
 
     switch (outcome) {
@@ -1778,6 +1829,71 @@ class GameScene extends Phaser.Scene {
     this.state.recaptureLockUntil = now + CONFIG.BALL.kickLockMs;
     this.ball.body.setVelocity(Math.cos(angle) * power, Math.sin(angle) * power);
     Renderer.onKick(this, player, kind, power);
+  }
+
+  /* ------------------------------------------------------------ the ground */
+
+  /*
+   * How churned the pitch is, as a grid over the playing area. A grid rather than a list
+   * of marks because what it is for is answering one question, several times a second, for
+   * wherever the ball happens to be: how bad is it just here.
+   */
+  freshPitch() {
+    const P = CONFIG.PITCH;
+    const W = CONFIG.WEAR;
+    const cols = Math.ceil(P.width / W.cellPx);
+    const rows = Math.ceil(P.height / W.cellPx);
+    return { cols, rows, level: new Float32Array(cols * rows) };
+  }
+
+  /* The cell a point is in, or -1 for anywhere off the pitch. */
+  wearCell(x, y) {
+    const P = CONFIG.PITCH;
+    const W = CONFIG.WEAR;
+    if (!this.wear || x < P.left || x >= P.right || y < P.top || y >= P.bottom) return -1;
+    const col = Math.floor((x - P.left) / W.cellPx);
+    const row = Math.floor((y - P.top) / W.cellPx);
+    return row * this.wear.cols + col;
+  }
+
+  wearAt(x, y) {
+    const cell = this.wearCell(x, y);
+    return cell === -1 ? 0 : this.wear.level[cell];
+  }
+
+  /*
+   * A kick going in. The ground under the boot takes most of it and the ground around it
+   * takes a little, which is what turns a match's worth of kicks into a worn middle rather
+   * than a scatter of dots.
+   */
+  tearPitch(x, y) {
+    if (!this.wear) return 0;
+    const cell = this.wearCell(x, y);
+    if (cell === -1) return 0;
+
+    const W = CONFIG.WEAR;
+    const add = (at, much) => {
+      if (at >= 0 && at < this.wear.level.length) {
+        this.wear.level[at] = Math.min(1, this.wear.level[at] + much);
+      }
+    };
+    add(cell, W.perKick);
+    // Left and right only within the same row, or a kick by the touchline wears the far one.
+    const col = cell % this.wear.cols;
+    if (col > 0) add(cell - 1, W.spread);
+    if (col < this.wear.cols - 1) add(cell + 1, W.spread);
+    add(cell - this.wear.cols, W.spread);
+    add(cell + this.wear.cols, W.spread);
+
+    Renderer.onPitchWear(this, x, y, this.wear.level[cell]);
+    return this.wear.level[cell];
+  }
+
+  /* What the ball is rolling through, right where it is. */
+  ballDragNow() {
+    const base = CONFIG.BALL.drag * this.surface.ballDragScale;
+    if (!this.wear) return base;
+    return base * (1 + this.wearAt(this.ball.x, this.ball.y) * (CONFIG.WEAR.dragScale - 1));
   }
 
   /* --------------------------------------------------------- match flow */

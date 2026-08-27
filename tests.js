@@ -3019,6 +3019,262 @@ const DrunkTests = (() => {
       };
     });
 
+    group('the ground');
+
+    check('the pitch has grass on it, not just paint', () => {
+      /*
+       * Two shades of green in ten bands is mowing, not grass. The blades are what make it
+       * a pitch: short strokes, half lighter than the band they stand in and half darker,
+       * and every one of them inside the touchline.
+       */
+      const P = CONFIG.PITCH;
+      const rec = recorder();
+      Renderer.drawGrass(rec);
+      const off = rec.lines.filter((l) => Math.min(l.x1, l.x2) < P.left
+        || Math.max(l.x1, l.x2) > P.right || Math.min(l.y1, l.y2) < P.top
+        || Math.max(l.y1, l.y2) > P.bottom);
+      // Two base greens, each drawn a shade up and a shade down: four in all, and the
+      // bands alternate between them.
+      const shades = new Set(rec.lines.map((l) => l.colour));
+      return {
+        pass: rec.lines.length > 500 && off.length === 0 && shades.size === 4,
+        detail: rec.lines.length + ' blades in ' + shades.size + ' shades, '
+          + off.length + ' of them growing off the pitch',
+      };
+    });
+    check('snow lies on the frozen pitch, and on no other', () => {
+      const P = CONFIG.PITCH;
+      const rec = recorder();
+      Renderer.drawLyingSnow(rec);
+      const spilling = rec.circles.filter((c) => c.x - c.radius < P.left - 0.01
+        || c.x + c.radius > P.right + 0.01 || c.y - c.radius < P.top - 0.01
+        || c.y + c.radius > P.bottom + 0.01);
+      const snowy = Renderer.SKINS.filter((sk) => sk.snowy).map((sk) => sk.key);
+      return {
+        pass: rec.circles.length >= Renderer.LYING_SNOW.patches && spilling.length === 0
+          && snowy.join(',') === 'frozen',
+        detail: rec.circles.length + ' blobs of snow, ' + spilling.length
+          + ' over the line, lying on ' + (snowy.join(',') || 'nothing'),
+      };
+    });
+    check('only a park pitch wears', () => {
+      // Every other ground is the same at full time as it was at kickoff.
+      const wears = Object.keys(CONFIG.SURFACES).filter((k) => CONFIG.SURFACES[k].wears);
+      const sunday = CONFIG.SURFACE_BY_SKIN.sunday;
+      return {
+        pass: wears.join(',') === 'mud' && sunday === 'mud',
+        detail: 'wearing surfaces: ' + (wears.join(',') || 'none') + ', and sunday league '
+          + 'is played on ' + sunday,
+      };
+    });
+    check('the ground gives way where the ball is kicked', () => {
+      const wasSkin = Renderer.activeSkin;
+      Renderer.applySkin('sunday');
+      const P = CONFIG.PITCH;
+      const g = startMatch('two');
+      const spot = { x: P.centreX + 160, y: P.centreY - 80 };
+      const far = { x: P.left + 60, y: P.bottom - 60 };
+      const before = g.wearAt(spot.x, spot.y);
+      for (let i = 0; i < 3; i += 1) g.tearPitch(spot.x, spot.y);
+      const after = g.wearAt(spot.x, spot.y);
+      const elsewhere = g.wearAt(far.x, far.y);
+      Renderer.applySkin(wasSkin);
+      return {
+        pass: !!g.wear && before === 0 && after > before && elsewhere === 0,
+        detail: !g.wear ? 'the pitch does not wear at all'
+          : 'three kicks took it from ' + before.toFixed(2) + ' to ' + after.toFixed(2)
+            + ', and the far corner is still ' + elsewhere.toFixed(2),
+      };
+    });
+    check('it churns rather than digging through to Australia', () => {
+      // Fifty kicks in the same spot is a bog, and a bog is as bad as it gets.
+      const wasSkin = Renderer.activeSkin;
+      Renderer.applySkin('sunday');
+      const P = CONFIG.PITCH;
+      const g = startMatch('two');
+      for (let i = 0; i < 50; i += 1) g.tearPitch(P.centreX, P.centreY);
+      const worst = g.wearAt(P.centreX, P.centreY);
+      g.ball.setPosition(P.centreX, P.centreY);
+      const drag = g.ballDragNow();
+      const fresh = CONFIG.BALL.drag * g.surface.ballDragScale;
+      Renderer.applySkin(wasSkin);
+      return {
+        pass: worst === 1 && drag === fresh * CONFIG.WEAR.dragScale,
+        detail: 'worn to ' + worst.toFixed(2) + ', and the ball drags at ' + Math.round(drag)
+          + ' where fresh grass drags at ' + Math.round(fresh),
+      };
+    });
+    check('a ball rolls up short through the churn', () => {
+      /*
+       * The whole point of the wear: not that it looks bad, but that a pass across the
+       * middle of a Sunday League match at full time does not arrive. Rolled twice down
+       * the same lane at the same speed, once on grass and once through a bog.
+       */
+      const wasSkin = Renderer.activeSkin;
+      Renderer.applySkin('sunday');
+      const P = CONFIG.PITCH;
+      const g = startMatch('two');
+      const lane = P.centreY - 150;
+      const from = P.left + 120;
+      // Out of the way, and left there: a player who picks the ball up ends the roll.
+      g.red.sprite.setPosition(P.centreX, P.bottom - 60);
+      g.blue.sprite.setPosition(P.centreX + 200, P.bottom - 60);
+      const roll = () => {
+        g.setOwner(null);
+        g.state.recaptureLockUntil = g.time.now + 99999;
+        g.ball.body.reset(from, lane);
+        g.ball.body.setVelocity(CONFIG.KICK.passPower, 0);
+        let guard = 0;
+        while (g.ball.body.speed > 8 && guard++ < 400) step(1);
+        return g.ball.x - from;
+      };
+      const onGrass = roll();
+      for (let x = from; x < from + 700; x += CONFIG.WEAR.cellPx) {
+        for (let i = 0; i < 5; i += 1) g.tearPitch(x, lane);
+      }
+      const throughMud = roll();
+      Renderer.applySkin(wasSkin);
+      return {
+        pass: throughMud < onGrass * 0.85,
+        detail: Math.round(onGrass) + 'px on fresh grass, ' + Math.round(throughMud)
+          + 'px once it is churned',
+      };
+    });
+    check('nothing wears on a proper pitch', () => {
+      const wasSkin = Renderer.activeSkin;
+      Renderer.applySkin('classic');
+      const P = CONFIG.PITCH;
+      const g = startMatch('two');
+      const torn = g.tearPitch(P.centreX, P.centreY);
+      const drag = g.ballDragNow();
+      Renderer.applySkin(wasSkin);
+      return {
+        pass: g.wear === null && torn === 0 && drag === CONFIG.BALL.drag,
+        detail: g.wear ? 'the grass wore out' : 'kicks leave it alone, drag stays at ' + drag,
+      };
+    });
+    check('a new match is played on a fresh pitch', () => {
+      const wasSkin = Renderer.activeSkin;
+      Renderer.applySkin('sunday');
+      const P = CONFIG.PITCH;
+      const first = startMatch('two');
+      for (let i = 0; i < 6; i += 1) first.tearPitch(P.centreX, P.centreY);
+      const churned = first.wearAt(P.centreX, P.centreY);
+      const second = startMatch('two');
+      const afterwards = second.wearAt(P.centreX, P.centreY);
+      Renderer.applySkin(wasSkin);
+      return {
+        pass: churned > 0 && afterwards === 0,
+        detail: 'left at ' + churned.toFixed(2) + ', the next match starts at '
+          + afterwards.toFixed(2),
+      };
+    });
+
+    group('weather');
+
+    check('it snows on about one frozen match in three', () => {
+      const wasSkin = Renderer.activeSkin;
+      const was = Renderer.snowing;
+      Renderer.applySkin('frozen');
+      let snowed = 0;
+      const rolls = 600;
+      for (let i = 0; i < rolls; i += 1) if (Renderer.rollWeather()) snowed += 1;
+      Renderer.applySkin(wasSkin);
+      Renderer.snowing = was;
+      const share = snowed / rolls;
+      return {
+        pass: Math.abs(share - CONFIG.WEATHER.snowChance) < 0.06,
+        detail: snowed + ' of ' + rolls + ' matches, which is '
+          + Math.round(share * 100) + '% against a chance of '
+          + Math.round(CONFIG.WEATHER.snowChance * 100) + '%',
+      };
+    });
+    check('nothing else has weather at all', () => {
+      const wasSkin = Renderer.activeSkin;
+      const was = Renderer.snowing;
+      const wrong = [];
+      Renderer.SKINS.filter((sk) => !sk.snowy).forEach((sk) => {
+        Renderer.applySkin(sk.key);
+        for (let i = 0; i < 40; i += 1) if (Renderer.rollWeather()) wrong.push(sk.key);
+      });
+      Renderer.applySkin(wasSkin);
+      Renderer.snowing = was;
+      return {
+        pass: wrong.length === 0,
+        detail: wrong.length ? 'it snowed on ' + [...new Set(wrong)].join(', ')
+          : 'four skins, forty rolls each, not a flake',
+      };
+    });
+    check('snow coming down deadens the ice', () => {
+      /*
+       * Frozen already slides. Snow falling on it should not be a change of scenery only:
+       * it grabs a little, which is a third surface between the ice and the grass.
+       */
+      const S = CONFIG.SURFACES;
+      const between = S.snow.grip > S.ice.grip && S.snow.grip < S.grass.grip
+        && S.snow.ballDragScale > S.ice.ballDragScale
+        && S.snow.ballDragScale < S.grass.ballDragScale;
+      const wasSkin = Renderer.activeSkin;
+      const was = Renderer.snowing;
+      Renderer.applySkin('frozen');
+      const chance = CONFIG.WEATHER.snowChance;
+      CONFIG.WEATHER.snowChance = 1;
+      const g = startMatch('two');
+      const playedOn = g.surface;
+      CONFIG.WEATHER.snowChance = chance;
+      Renderer.applySkin(wasSkin);
+      Renderer.snowing = was;
+      return {
+        pass: between && playedOn === S.snow,
+        detail: 'grip ' + S.ice.grip + ' on ice, ' + S.snow.grip + ' under snow, '
+          + S.grass.grip + ' on grass, and the match was played on '
+          + (playedOn === S.snow ? 'snow' : 'something else'),
+      };
+    });
+    check('the flakes are on the screen, falling, and new every match', () => {
+      const wasSkin = Renderer.activeSkin;
+      const was = Renderer.snowing;
+      const chance = CONFIG.WEATHER.snowChance;
+      Renderer.applySkin('frozen');
+      CONFIG.WEATHER.snowChance = 1;
+      const first = startMatch('two');
+      const old = first.snow;
+      const g = startMatch('two');
+      const flakes = g.snow || [];
+      const offScreen = flakes.filter((f) => f.x < 0 || f.x > CONFIG.CANVAS.width
+        || f.y < -10 || f.y > CONFIG.CANVAS.height + 10);
+      const falling = flakes.filter((f) => g.tweens.getTweensOf(f).length > 0);
+      CONFIG.WEATHER.snowChance = chance;
+      Renderer.applySkin(wasSkin);
+      Renderer.snowing = was;
+      return {
+        pass: flakes.length === Renderer.SNOW.flakes && offScreen.length === 0
+          && falling.length === flakes.length && flakes !== old
+          && (old || []).every((f) => !f.active),
+        detail: flakes.length + ' flakes, ' + falling.length + ' of them falling, '
+          + offScreen.length + ' off the screen, and the last match\'s '
+          + ((old || []).length) + ' destroyed with it',
+      };
+    });
+    check('a match with no snow has none of it', () => {
+      const wasSkin = Renderer.activeSkin;
+      const was = Renderer.snowing;
+      const chance = CONFIG.WEATHER.snowChance;
+      Renderer.applySkin('frozen');
+      CONFIG.WEATHER.snowChance = 0;
+      const g = startMatch('two');
+      const flakes = g.children.list.filter((o) => o.texture && o.texture.key === 'flake');
+      const surface = g.surface;
+      CONFIG.WEATHER.snowChance = chance;
+      Renderer.applySkin(wasSkin);
+      Renderer.snowing = was;
+      return {
+        pass: g.snow === null && flakes.length === 0 && surface === CONFIG.SURFACES.ice,
+        detail: flakes.length + ' flakes on a clear night, played on '
+          + (surface === CONFIG.SURFACES.ice ? 'ice' : 'something else'),
+      };
+    });
+
     group('the settings keys');
 
     check('every key on that screen reaches something that exists', () => {
