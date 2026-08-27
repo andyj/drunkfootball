@@ -995,6 +995,13 @@ const Renderer = {
     off: 'never, whatever you are playing on',
   },
 
+  /* Keyed by CONFIG.ASSIST.LEVELS, which is where what they actually do is written. */
+  ASSIST_BLURB: {
+    off: 'shots go down the middle and passes go where you face',
+    steady: 'a shade straighter, at the price of a few more mis-hits',
+    full: 'straighter again and leans off the keeper, and costs you more',
+  },
+
   /* A thumb-controlled match has no key legend to correct. */
   updateControlHint(hud, usesMouse) {
     if (hud.left) hud.left.setText(Renderer.controlSummary('red', usesMouse));
@@ -2764,9 +2771,9 @@ const Renderer = {
     Renderer.text(scene, nameX, 404, 'CONTROLS', 18, C.accent).setDepth(Renderer.DEPTH.overlay);
 
     /*
-     * Four rows and a heading in each half of what is left of the band, which is why the
-     * spacing here is tighter than it looks like it wants to be. The suite checks nothing
-     * has grown past the grass it stands on.
+     * Four rows under one heading and a fifth under another, in what is left of the band,
+     * which is why the spacing here is tighter than it looks like it wants to be. The
+     * suite checks nothing has grown past the grass it stands on.
      */
     const row = (y, label, blurb, onPick) => {
       Renderer.optionAt(scene, nameX, y, label, 21, onPick);
@@ -2779,28 +2786,26 @@ const Renderer = {
       'left click passes, right click shoots, one player only', handlers.mouse);
     row(464, 'T   THUMB CONTROLS   ' + state.touch.toUpperCase(),
       Renderer.TOUCH_BLURB[state.touch], handlers.touch);
-    row(494, 'A   AIM ASSIST   ' + (state.assist ? 'ON' : 'OFF'),
-      state.assist
-        ? 'picks the open corner, and still every bit as drunk'
-        : 'shots go down the middle and passes go where you face',
-      handlers.assist);
+    row(494, 'A   AIM ASSIST   ' + state.assist.toUpperCase(),
+      Renderer.ASSIST_BLURB[state.assist], handlers.assist);
 
-    Renderer.text(scene, nameX, 528, 'GROUND', 18, C.accent).setDepth(Renderer.DEPTH.overlay);
+    // The keys themselves live on a screen of their own, where they can be changed. It is
+    // still a control, so it belongs here rather than under the ground it is played on.
+    row(524, 'K   CHANGE THE KEYS',
+      'move, pass and shoot, for both players', handlers.keys);
+
+    Renderer.text(scene, nameX, 558, 'GROUND', 18, C.accent).setDepth(Renderer.DEPTH.overlay);
     /*
      * A skin may own the only ground it is ever played in, in which case this says so
      * rather than offering a choice that would be ignored the moment a match started.
      */
     const owned = Renderer.skinGround();
     const ground = Renderer.STADIUMS.find((st) => st.key === Renderer.stadiumChoice);
-    row(558,
+    row(588,
       owned ? 'G   STADIUM   ' + owned.name : 'G   STADIUM   ' + Renderer.stadiumChoice.toUpperCase(),
       owned ? owned.blurb + ', and nothing else for this skin'
         : (ground ? ground.blurb : 'a different ground every match'),
       handlers.stadium);
-
-    // The keys themselves now live on a screen of their own, where they can be changed.
-    row(588, 'K   CHANGE THE KEYS',
-      'move, pass and shoot, for both players', handlers.keys);
 
     // Under the settings rather than among them, because it is not one: it leaves for a
     // different build of the game entirely.

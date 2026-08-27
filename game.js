@@ -85,17 +85,36 @@ const CONFIG = {
   },
 
   /*
-   * Aim assist. It assists the aim and nothing else: the drunk table below is untouched,
-   * so an assisted player whiffs, backheels and falls over exactly as often as anybody
-   * else. All it changes is where the ball goes on the presses that do come off.
+   * Aim assist, in three settings, and every one of them is bought rather than given: the
+   * steadier your aim, the drunker you are when you swing at it. cleanTouchScale is what
+   * the help costs, and it costs it out of the one weight on the drunk table that is any
+   * use to you. Nothing else on that table moves, so what you buy is a straighter shot
+   * and what you pay is more shots you never hit at all.
    *
-   * Never for the bot. It has its own aimWobbleDeg, which is how a difficulty is set, and
-   * handing it this as well would quietly make every bot harder.
+   * Never for the bot, neither the help nor the price. Its aim is its aimWobbleDeg, which
+   * is how a difficulty is set, and it rolls the plain table like it always has.
+   *
+   * A level says only what it changes, so off is an empty one and every unassisted number
+   * stays the single copy of itself up in KICK.
+   *
+   * Deliberately weak. An earlier go at this shot within 2 degrees and put the ball in the
+   * corner the keeper had left, which aimed the game for you. So the ladder is 7 degrees
+   * of scatter down to 4, and the most the top setting does about the keeper is lean away
+   * from him.
    */
   ASSIST: {
-    shootSpreadDeg: 2,      // against 7 unassisted
-    cornerInsetPx: 26,      // how far inside the post to aim, so a corner is still on target
-    passBendDeg: 40,        // the most a pass may be turned goalwards from where you face
+    openLeanPx: 50,         // how far inside the post to lean, which is nowhere near a corner
+    LEVELS: [
+      { key: 'off' },
+      { key: 'steady', shootSpreadDeg: 5.5, passBendDeg: 10, cleanTouchScale: 0.85 },
+      {
+        key: 'full',
+        shootSpreadDeg: 4,
+        passBendDeg: 22,
+        leanOffKeeper: true,
+        cleanTouchScale: 0.7,
+      },
+    ],
   },
 
   /* The whole point of the game. Every Pass/Shoot press rolls against this once. */
@@ -444,8 +463,14 @@ function updateKeeperFreeze(scene, keeper, now) {
  * touch is 'auto', 'on' or 'off' for the on-screen stick and buttons. Auto asks the
  * device, which is a guess, which is why the other two exist.
  */
-const AIM = { redUsesMouse: true, touch: 'auto', assist: false };
+const AIM = { redUsesMouse: true, touch: 'auto', assist: 'off' };
 const TOUCH_MODES = ['auto', 'on', 'off'];
+const ASSIST_KEYS = CONFIG.ASSIST.LEVELS.map((level) => level.key);
+
+/* Whatever is stored, something sane comes back: the first level is off. */
+function assistByKey(key) {
+  return CONFIG.ASSIST.LEVELS.find((level) => level.key === key) || CONFIG.ASSIST.LEVELS[0];
+}
 
 /*
  * A coarse pointer with no fine one anywhere is a phone or a tablet. A laptop with a
@@ -491,7 +516,9 @@ function loadPrefs() {
     } catch (err) { saved = null; }
     if (saved && typeof saved.redUsesMouse === 'boolean') AIM.redUsesMouse = saved.redUsesMouse;
     if (saved && TOUCH_MODES.indexOf(saved.touch) !== -1) AIM.touch = saved.touch;
-    if (saved && typeof saved.assist === 'boolean') AIM.assist = saved.assist;
+    // An older build stored this as a switch, and on meant everything now called full.
+    if (saved && typeof saved.assist === 'boolean') AIM.assist = saved.assist ? 'full' : 'off';
+    if (saved && ASSIST_KEYS.indexOf(saved.assist) !== -1) AIM.assist = saved.assist;
     if (saved && saved.controls) applySavedControls(saved.controls);
   }
 }
@@ -634,7 +661,7 @@ class SettingsScene extends Phaser.Scene {
       skin: (key) => chooseSkin(this, key),
       mouse: () => this.toggleMouse(),
       touch: () => this.cycleTouch(),
-      assist: () => this.toggleAssist(),
+      assist: () => this.cycleAssist(),
       stadium: () => this.cycleStadium(),
       keys: () => this.scene.start('Keys', { returnTo: this.returnTo }),
       legacy: () => { window.location.href = LEGACY_URL; },
@@ -695,8 +722,10 @@ class SettingsScene extends Phaser.Scene {
     window.location.reload();
   }
 
-  toggleAssist() {
-    AIM.assist = !AIM.assist;
+  /* Cycled rather than toggled: there are three answers and one of them is off. */
+  cycleAssist() {
+    const next = (ASSIST_KEYS.indexOf(AIM.assist) + 1) % ASSIST_KEYS.length;
+    AIM.assist = ASSIST_KEYS[next];
     savePrefs();
     this.refresh();
   }
@@ -1573,7 +1602,7 @@ class GameScene extends Phaser.Scene {
     if (this.state.owner !== player) return;   // no possession, the press is ignored
     if (now < player.stunnedUntil) return;
 
-    const outcome = rollOutcome(CONFIG.DRUNK.TABLE);
+    const outcome = rollOutcome(this.drunkTable(player));
 
     switch (outcome) {
       case 'intended':
@@ -1622,21 +1651,35 @@ class GameScene extends Phaser.Scene {
     if (outcome !== 'intended') Renderer.onOutcome(this, player, outcome);
   }
 
-  /* Switched on, and not a bot: a bot's aim is how its difficulty is set. */
-  assisted(player) {
-    return AIM.assist && !player.isBot;
+  /* Whatever is set, and never for a bot: a bot's aim is how its difficulty is set. */
+  assistLevel(player) {
+    return player.isBot ? CONFIG.ASSIST.LEVELS[0] : assistByKey(AIM.assist);
   }
 
   /*
-   * Where an assisted shot goes: the corner of the goal the keeper is furthest from,
-   * inset from the post so a corner is still a shot on target rather than a shot wide.
-   * With no keeper on the pitch there is no open corner, so the middle will do.
+   * The table this player rolls. Aim assist is paid for here: the weight on `intended`
+   * comes down, which leaves every mis-hit relatively likelier without any of them being
+   * touched. Unassisted, this is the shared constant itself and not a copy of it.
    */
-  openCorner(player) {
+  drunkTable(player) {
+    const scale = this.assistLevel(player).cleanTouchScale;
+    if (!scale) return CONFIG.DRUNK.TABLE;
+    return CONFIG.DRUNK.TABLE.map((row) => (row.key === 'intended'
+      ? { key: row.key, weight: row.weight * scale }
+      : row));
+  }
+
+  /*
+   * Where an assisted shot leans: the half of the goal the keeper is furthest from, and
+   * only leans, because the aim point sits well inside the post rather than in the corner
+   * and the spread around it is wider than the lean itself. With no keeper on the pitch
+   * there is nothing to lean away from, so the middle will do.
+   */
+  awayFromKeeper(player) {
     const P = CONFIG.PITCH;
-    const inset = CONFIG.ASSIST.cornerInsetPx;
-    const top = P.mouthTop + inset;
-    const bottom = P.mouthBottom - inset;
+    const lean = CONFIG.ASSIST.openLeanPx;
+    const top = P.mouthTop + lean;
+    const bottom = P.mouthBottom - lean;
     const side = player.targetGoalX > P.centreX ? 'right' : 'left';
     const keeper = this.keepers.find((k) => k.side === side);
     if (!keeper) return P.centreY;
@@ -1645,30 +1688,34 @@ class GameScene extends Phaser.Scene {
 
   /*
    * Turned towards goal, but only so far. A pass that snapped straight at the net would
-   * stop being a pass, so this bends it by at most passBendDeg and leaves the rest of the
-   * decision where it was, with whoever is holding the keys.
+   * stop being a pass, so this bends it by at most `most` degrees and leaves the rest of
+   * the decision where it was, with whoever is holding the keys.
    */
-  bendGoalwards(player, facing) {
+  bendGoalwards(player, facing, mostDeg) {
     const want = Phaser.Math.Angle.Between(
       this.ball.x, this.ball.y, player.targetGoalX, CONFIG.PITCH.centreY);
-    const most = Phaser.Math.DegToRad(CONFIG.ASSIST.passBendDeg);
+    const most = Phaser.Math.DegToRad(mostDeg);
     const off = Phaser.Math.Angle.Wrap(want - facing);
     return facing + Phaser.Math.Clamp(off, -most, most);
   }
 
   doKick(player, kind, now) {
     const wobble = player.isBot ? this.botCfg.aimWobbleDeg : 0;
-    const assisted = this.assisted(player);
+    const level = this.assistLevel(player);
 
     if (kind === 'pass') {
-      const aimed = assisted ? this.bendGoalwards(player, player.facing) : player.facing;
+      const aimed = level.passBendDeg
+        ? this.bendGoalwards(player, player.facing, level.passBendDeg)
+        : player.facing;
       const angle = aimed + Phaser.Math.DegToRad(Phaser.Math.FloatBetween(-wobble, wobble));
       this.releaseBall(player, angle, CONFIG.KICK.passPower, now, 'pass');
       return;
     }
 
-    const spread = (assisted ? CONFIG.ASSIST.shootSpreadDeg : CONFIG.KICK.shootSpreadDeg) + wobble;
-    const aimY = assisted ? this.openCorner(player) : CONFIG.PITCH.centreY;
+    // A level says only what it changes, so an unset spread is the unassisted one.
+    const spread = (level.shootSpreadDeg === undefined
+      ? CONFIG.KICK.shootSpreadDeg : level.shootSpreadDeg) + wobble;
+    const aimY = level.leanOffKeeper ? this.awayFromKeeper(player) : CONFIG.PITCH.centreY;
     const base = Phaser.Math.Angle.Between(this.ball.x, this.ball.y, player.targetGoalX, aimY);
     const angle = base + Phaser.Math.DegToRad(Phaser.Math.FloatBetween(-spread, spread));
     this.releaseBall(player, angle, CONFIG.KICK.shootPower, now, 'shoot');

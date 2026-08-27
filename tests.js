@@ -1551,9 +1551,9 @@ const DrunkTests = (() => {
 
     group('aim assist');
 
-    function withAssist(on, fn) {
+    function withAssist(level, fn) {
       const was = AIM.assist;
-      AIM.assist = on;
+      AIM.assist = level;
       try {
         return fn();
       } finally {
@@ -1580,33 +1580,70 @@ const DrunkTests = (() => {
       return P.centreY + (v.y / v.x) * run;
     }
 
-    check('assisted shots go to the corner the keeper is not at', () => {
+    check('there are three settings and they are a ladder', () => {
+      /*
+       * Off, then a nudge, then the lot. Each step has to be more help than the one before
+       * it or there is no reason for it to be there, and only the top one does anything
+       * about the keeper at all.
+       */
+      const levels = CONFIG.ASSIST.LEVELS;
+      const spread = (l) => (l.shootSpreadDeg === undefined
+        ? CONFIG.KICK.shootSpreadDeg : l.shootSpreadDeg);
+      const wrong = [];
+      if (levels.length !== 3) wrong.push(levels.length + ' settings');
+      if (levels[0].key !== 'off' || Object.keys(levels[0]).length !== 1) {
+        wrong.push('the first one does something');
+      }
+      levels.forEach((level, i) => {
+        if (i === 0) return;
+        if (spread(level) >= spread(levels[i - 1])) wrong.push(level.key + ' shoots no straighter');
+        if (!(level.passBendDeg > (levels[i - 1].passBendDeg || 0))) {
+          wrong.push(level.key + ' bends a pass no further');
+        }
+      });
+      if (levels.filter((l) => l.leanOffKeeper).length !== 1 || !levels[2].leanOffKeeper) {
+        wrong.push('leaning off the keeper is not the top setting alone');
+      }
+      return {
+        pass: wrong.length === 0,
+        detail: wrong.join(', ') || levels.map((l) => l.key + ' ' + spread(l) + 'deg/'
+          + (l.passBendDeg || 0) + 'deg bend').join(', '),
+      };
+    });
+    check('assisted shots lean away from the keeper, and only lean', () => {
+      /*
+       * A lean, not a pick: the aim shifts to the half the keeper has left, but the
+       * scatter around it is wider than the shift, so plenty of shots still go straight
+       * back at him. Averages, because one shot proves nothing either way.
+       */
       const g = startMatch('two');
       const P = CONFIG.PITCH;
       const high = [];
       const low = [];
-      withAssist(true, () => {
+      withAssist('full', () => {
         // Keeper high, then keeper low. The aim should cross over between the two.
-        for (let i = 0; i < 12; i += 1) high.push(shootFrom(g, g.red, P.mouthTop + 10));
-        for (let i = 0; i < 12; i += 1) low.push(shootFrom(g, g.red, P.mouthBottom - 10));
+        for (let i = 0; i < 40; i += 1) high.push(shootFrom(g, g.red, P.mouthTop + 10));
+        for (let i = 0; i < 40; i += 1) low.push(shootFrom(g, g.red, P.mouthBottom - 10));
       });
       const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
       const keeperHigh = mean(high);
       const keeperLow = mean(low);
+      const atKeeper = high.filter((y) => y < P.centreY).length;
       return {
-        pass: keeperHigh > P.centreY && keeperLow < P.centreY,
-        detail: 'keeper high -> aims at y' + Math.round(keeperHigh)
-          + ', keeper low -> aims at y' + Math.round(keeperLow)
-          + ' (centre ' + Math.round(P.centreY) + ')',
+        pass: keeperHigh > P.centreY && keeperLow < P.centreY && atKeeper > 0,
+        detail: 'keeper high -> averages y' + Math.round(keeperHigh)
+          + ', keeper low -> y' + Math.round(keeperLow)
+          + ' (centre ' + Math.round(P.centreY) + '), and ' + atKeeper
+          + ' of 40 still went back at him',
       };
     });
     check('an assisted shot is still a shot on target', () => {
-      // A corner is no use if it is a corner of the netting rather than of the goal.
+      // Leaning off the keeper is no use if the lean plus the scatter puts the ball wide.
       const g = startMatch('two');
       const P = CONFIG.PITCH;
       const wide = [];
-      withAssist(true, () => {
-        for (let i = 0; i < 40; i += 1) {
+      withAssist('full', () => {
+        for (let i = 0; i < 60; i += 1) {
           const y = shootFrom(g, g.red, i % 2 ? P.mouthTop + 10 : P.mouthBottom - 10);
           if (y < P.mouthTop || y > P.mouthBottom) wide.push(Math.round(y));
         }
@@ -1614,23 +1651,25 @@ const DrunkTests = (() => {
       return {
         pass: wide.length === 0,
         detail: wide.length ? 'off target at y' + wide.slice(0, 4).join(', ')
-          : '40 shots, all between the posts',
+          : '60 shots, all between the posts',
       };
     });
-    check('assist tightens the spread rather than removing it', () => {
+    check('each setting tightens the spread, and none of them removes it', () => {
+      // Measured on the goal line, in pixels, with the keeper parked in the middle so the
+      // aim is the same for all three and only the scatter round it differs.
       const g = startMatch('two');
       const P = CONFIG.PITCH;
-      const spreadOf = (on) => withAssist(on, () => {
+      const spreadOf = (level) => withAssist(level, () => {
         const ys = [];
-        for (let i = 0; i < 40; i += 1) ys.push(shootFrom(g, g.red, P.centreY));
+        for (let i = 0; i < 60; i += 1) ys.push(shootFrom(g, g.red, P.centreY));
         return Math.max(...ys) - Math.min(...ys);
       });
-      const loose = spreadOf(false);
-      const tight = spreadOf(true);
+      const spreads = CONFIG.ASSIST.LEVELS.map((l) => spreadOf(l.key));
+      const tightening = spreads.every((px, i) => i === 0 || px < spreads[i - 1]);
       return {
-        pass: tight < loose && tight > 0,
-        detail: 'unassisted spreads ' + Math.round(loose) + 'px, assisted '
-          + Math.round(tight) + 'px',
+        pass: tightening && spreads[spreads.length - 1] > 0,
+        detail: CONFIG.ASSIST.LEVELS.map((l, i) => l.key + ' ' + Math.round(spreads[i]) + 'px')
+          .join(', '),
       };
     });
     check('an assisted pass is bent towards goal, not aimed at it', () => {
@@ -1653,92 +1692,181 @@ const DrunkTests = (() => {
         return Math.atan2(g.ball.body.velocity.y, g.ball.body.velocity.x);
       };
 
-      // Facing straight away from goal is the hardest case: a full 180 to correct.
+      // Facing straight away from goal is the hardest case: a full 180 to correct, so
+      // every setting turns the pass by exactly as much as it is allowed to and no more.
       const away = Math.PI;
-      const bent = withAssist(true, () => angleAfterPass(away));
-      const plain = withAssist(false, () => angleAfterPass(away));
-      const turnedDeg = Math.abs(Phaser.Math.RadToDeg(Phaser.Math.Angle.Wrap(bent - away)));
-      const cap = CONFIG.ASSIST.passBendDeg;
+      const wrong = [];
+      const turns = CONFIG.ASSIST.LEVELS.map((level) => {
+        const angle = withAssist(level.key, () => angleAfterPass(away));
+        const turned = Math.abs(Phaser.Math.RadToDeg(Phaser.Math.Angle.Wrap(angle - away)));
+        const cap = level.passBendDeg || 0;
+        if (Math.abs(turned - cap) > 0.5) wrong.push(level.key + ' turned ' + turned.toFixed(1)
+          + ' with a cap of ' + cap);
+        return level.key + ' ' + turned.toFixed(0) + ' of ' + cap;
+      });
+      return { pass: wrong.length === 0, detail: wrong.join(', ') || turns.join(', ') };
+    });
+    check('the help is paid for in sobriety', () => {
+      /*
+       * The bargain, and the whole reason there is a choice to make: every step up the
+       * ladder takes a clean touch off you. Read off the table each level actually rolls,
+       * because the release rate alone cannot see it - a mis-hit still sends the ball
+       * somewhere, so most of the price is invisible to anything counting kicks.
+       */
+      const g = startMatch('two');
+      const before = JSON.stringify(CONFIG.DRUNK.TABLE);
+      const misHits = (table) => table.filter((row) => row.key !== 'intended')
+        .map((row) => row.weight).join(',');
+
+      const odds = CONFIG.ASSIST.LEVELS.map((level) => withAssist(level.key, () => {
+        const table = g.drunkTable(g.red);
+        const total = table.reduce((n, row) => n + row.weight, 0);
+        return {
+          key: level.key,
+          clean: table.find((row) => row.key === 'intended').weight / total,
+          rest: misHits(table),
+        };
+      }));
+      const wrong = [];
+      odds.forEach((level, i) => {
+        if (i > 0 && level.clean >= odds[i - 1].clean) wrong.push(level.key + ' costs nothing');
+        if (level.rest !== misHits(CONFIG.DRUNK.TABLE)) wrong.push(level.key + ' moved a mis-hit');
+      });
+      if (JSON.stringify(CONFIG.DRUNK.TABLE) !== before) wrong.push('THE TABLE ITSELF CHANGED');
 
       return {
-        pass: Math.abs(Phaser.Math.Angle.Wrap(plain - away)) < 0.01
-          && turnedDeg > 1 && turnedDeg <= cap + 0.5,
-        detail: 'turned ' + turnedDeg.toFixed(1) + ' degrees, cap is ' + cap,
+        pass: wrong.length === 0,
+        detail: wrong.join(', ') || 'a clean touch '
+          + odds.map((l) => l.key + ' ' + Math.round(l.clean * 100) + '%').join(' -> ')
+          + ', every mis-hit left exactly as it was',
       };
     });
-    check('assist leaves the drunk table exactly where it was', () => {
+    check('the price is paid at the real kick, not just on paper', () => {
       /*
-       * The whole bargain: it changes where the ball goes, never how often you cock it up.
-       * Measured through the real kick path, counting how many presses actually released
-       * the ball rather than whiffing, tripping or dribbling it away.
+       * Counted off the real thing rather than inferred from how fast the ball left: every
+       * outcome but the one you asked for reports itself to the renderer, so borrowing
+       * that hook counts clean touches exactly instead of guessing at them by speed.
+       *
+       * Off against full only. Their eight points apart is a gap 2000 presses can see
+       * without arguing; the step between neighbours is half that, and how the ladder is
+       * ordered is arithmetic the check above does exactly.
        */
-      const runs = (on) => withAssist(on, () => {
+      const was = Renderer.onOutcome;
+      const clean = (level) => withAssist(level, () => {
         const g = startMatch('two');
-        let released = 0;
-        for (let i = 0; i < 400; i += 1) {
-          const P = CONFIG.PITCH;
+        const P = CONFIG.PITCH;
+        let intended = 0;
+        for (let i = 0; i < 2000; i += 1) {
+          let missed = false;
+          Renderer.onOutcome = () => { missed = true; };
           g.red.sprite.setPosition(P.centreX, P.centreY);
           g.red.stunnedUntil = 0;
           g.ball.setPosition(P.centreX, P.centreY);
           g.ball.body.setVelocity(0, 0);
           g.setOwner(g.red);
           g.attemptKick(g.red, 'shoot', g.time.now);
-          if (g.ball.body.speed > 1) released += 1;
+          if (!missed) intended += 1;
         }
-        return released / 400;
+        return intended / 2000;
       });
+
       const before = JSON.stringify(CONFIG.DRUNK.TABLE);
-      const off = runs(false);
-      const on = runs(true);
+      let off = 0;
+      let full = 0;
+      try {
+        off = clean('off');
+        full = clean('full');
+      } finally {
+        Renderer.onOutcome = was;
+      }
       const after = JSON.stringify(CONFIG.DRUNK.TABLE);
 
-      /*
-       * Two ways round, because the rate alone only notices a change to whiffing and
-       * falling over: everything else on the table still releases the ball. The snapshot
-       * is what catches somebody quietly reweighting it in the name of being helpful.
-       */
       return {
-        pass: before === after && Math.abs(on - off) < 0.09,
-        detail: (before === after ? 'table untouched, ' : 'THE TABLE CHANGED, ')
-          + 'ball left the foot ' + Math.round(off * 100) + '% of presses unassisted, '
-          + Math.round(on * 100) + '% assisted',
+        pass: before === after && off - full > 0.03,
+        detail: (before === after ? '' : 'THE TABLE CHANGED, ')
+          + 'the press came off ' + Math.round(off * 100) + '% of the time with no help, '
+          + Math.round(full * 100) + '% with the lot',
       };
     });
-    check('the bot never gets it', () => {
-      // Its aim is how a difficulty is set, so handing it this would make every bot harder.
-      return withAssist(true, () => {
+    check('the bot pays nothing, because it is given nothing', () => {
+      // Identity, not equality: unassisted, a player rolls the shared table itself.
+      return withAssist('full', () => {
         const g = startMatch('bot');
         return {
-          pass: g.assisted(g.blue) === false && g.assisted(g.red) === true,
-          detail: 'bot ' + g.assisted(g.blue) + ', human ' + g.assisted(g.red),
+          pass: g.drunkTable(g.blue) === CONFIG.DRUNK.TABLE
+            && g.drunkTable(g.red) !== CONFIG.DRUNK.TABLE,
+          detail: 'bot on the plain table, human on one of its own',
         };
       });
+    });
+    check('the bot never gets it, whatever it is set to', () => {
+      // Its aim is how a difficulty is set, so handing it this would make every bot harder.
+      const got = CONFIG.ASSIST.LEVELS.map((level) => withAssist(level.key, () => {
+        const g = startMatch('bot');
+        return { bot: g.assistLevel(g.blue).key, human: g.assistLevel(g.red).key };
+      }));
+      return {
+        pass: got.every((r) => r.bot === 'off') && got[2].human === 'full',
+        detail: got.map((r) => 'bot ' + r.bot + '/human ' + r.human).join(', '),
+      };
     });
     check('both players get it in a two player match', () => {
-      return withAssist(true, () => {
+      return withAssist('steady', () => {
         const g = startMatch('two');
         return {
-          pass: g.assisted(g.red) === true && g.assisted(g.blue) === true,
-          detail: 'red ' + g.assisted(g.red) + ', blue ' + g.assisted(g.blue),
+          pass: g.assistLevel(g.red).key === 'steady' && g.assistLevel(g.blue).key === 'steady',
+          detail: 'red ' + g.assistLevel(g.red).key + ', blue ' + g.assistLevel(g.blue).key,
         };
       });
     });
-    check('switched off, nobody gets it', () => {
-      return withAssist(false, () => {
+    check('a setting nobody recognises is off rather than a crash', () => {
+      // Storage holds whatever an older build put there, including a level since renamed.
+      return withAssist('rocket boots', () => {
         const g = startMatch('two');
-        return { pass: !g.assisted(g.red) && !g.assisted(g.blue), detail: 'off for both' };
+        return { pass: g.assistLevel(g.red).key === 'off', detail: 'fell back to off' };
       });
     });
-    check('the setting is remembered', () => {
+    check('the setting cycles through all three and is remembered', () => {
       const stored = window.localStorage.getItem('drunkfootball.prefs');
       const was = AIM.assist;
-      AIM.assist = !was;
-      savePrefs();
+      AIM.assist = 'off';
+      const scene = sceneByKey('Settings');
+      const seen = [];
+      for (let i = 0; i < CONFIG.ASSIST.LEVELS.length; i += 1) {
+        scene.cycleAssist();
+        seen.push(AIM.assist);
+      }
       const saved = JSON.parse(window.localStorage.getItem('drunkfootball.prefs') || '{}');
       AIM.assist = was;
       if (stored === null) window.localStorage.removeItem('drunkfootball.prefs');
       else window.localStorage.setItem('drunkfootball.prefs', stored);
-      return { pass: saved.assist === !was, detail: 'stored as ' + saved.assist };
+      return {
+        pass: seen.join(',') === 'steady,full,off' && saved.assist === 'off',
+        detail: 'off -> ' + seen.join(' -> ') + ', stored as ' + saved.assist,
+      };
+    });
+    check('an old saved switch becomes a level', () => {
+      /*
+       * This was a toggle a version ago. Somebody who had it on has `true` in storage, and
+       * a preference that quietly reset itself would be read as the setting not working.
+       */
+      const stored = window.localStorage.getItem('drunkfootball.prefs');
+      const was = AIM.assist;
+      const read = (value) => {
+        window.localStorage.setItem('drunkfootball.prefs', JSON.stringify({ assist: value }));
+        AIM.assist = 'steady';
+        loadPrefs();
+        return AIM.assist;
+      };
+      const on = read(true);
+      const off = read(false);
+      AIM.assist = was;
+      if (stored === null) window.localStorage.removeItem('drunkfootball.prefs');
+      else window.localStorage.setItem('drunkfootball.prefs', stored);
+      return {
+        pass: on === 'full' && off === 'off',
+        detail: 'true reads as ' + on + ', false as ' + off,
+      };
     });
 
     group('the stands');
