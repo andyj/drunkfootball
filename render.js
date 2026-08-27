@@ -134,22 +134,79 @@ const Renderer = {
   STADIUMS: [
     {
       key: 'small', name: 'SMALL',
-      blurb: 'a rail, a dog, and whoever wandered over',
-      rows: 1, people: [12, 20], terrace: 0,
+      blurb: 'a metal rail, a dog, and whoever wandered over',
+      material: 'metal', rows: 1, people: [12, 22], terrace: 0,
     },
     {
       key: 'medium', name: 'MEDIUM',
-      blurb: 'two rows deep and a proper Saturday',
-      rows: 2, people: [42, 58], terrace: 0,
+      blurb: 'brick terracing and a proper Saturday',
+      material: 'brick', rows: 2, people: [58, 78], terrace: 2,
     },
     {
       key: 'large', name: 'LARGE',
-      blurb: 'terraced, packed, and louder than the game deserves',
+      blurb: 'brick, packed, and louder than the game deserves',
       // Packed tighter than the others, because three rows have to fit in the same 60px
       // of surround that one row has all to itself in a small ground.
-      rows: 3, people: [78, 96], terrace: 3, standOff: 12, rowGap: 12,
+      material: 'brick', rows: 3, people: [115, 145], terrace: 3, standOff: 12, rowGap: 12,
     },
   ],
+
+  /*
+   * What a stand is built out of. A small ground is a scaffold of galvanised sheet with a
+   * bench along it; the bigger two are brick terracing with plastic seats bolted to them.
+   * Nothing here is derived from the skin: a ground is a ground whatever colour the kits
+   * are, and a brick wall that changed colour with the strip would look like a mistake.
+   */
+  MATERIALS: {
+    metal: {
+      wall: 0x3f464c,
+      edge: 0x5d666d,
+      rail: 0x828b93,
+      seat: 0x767f87,
+      seatEdge: 0x4c545b,
+      jointAlpha: 0.4,
+      ribEvery: 16,       // corrugation, drawn across the sheet
+    },
+    brick: {
+      /*
+       * Brick at night rather than brick in a catalogue. The first go at this was a proper
+       * terracotta and the stand shouted louder than the match did.
+       */
+      wall: 0x40261f,
+      edge: 0x56332a,
+      rail: 0x6b4c40,
+      seat: 0x2e3a4a,     // plastic, bolted to the terracing
+      seatEdge: 0x1e2733,
+      jointAlpha: 0.33,
+      courseEvery: 10,    // a course of bricks
+      brickEvery: 26,     // and how long each brick is
+    },
+  },
+
+  SEATS: {
+    // Wider apart than a supporter is, so a full row still has air in it and an empty seat
+    // in the middle of one is something you can actually see.
+    every: 21,
+    width: 12,
+    height: 8,
+  },
+
+  /*
+   * Nobody watches a whole match. Every so often somebody gets up, goes out through one of
+   * the gaps at the back of the stand, and comes back with a drink to the seat they left,
+   * which is sitting there empty in the meantime.
+   */
+  BEER: {
+    everyMinMs: 900,
+    everyMaxMs: 2600,
+    maxAway: 7,           // so the stand never visibly empties
+    walkMinMs: 600,
+    walkMaxMs: 1000,
+    awayMinMs: 1800,
+    awayMaxMs: 4600,
+    holeWidth: 30,
+    holeDepth: 22,        // how far into the back of the stand the gap is cut
+  },
 
   STADIUM_STORAGE_KEY: 'drunkfootball.stadium',
   /* 'random' rolls a fresh one every match. The other three pin it. */
@@ -1048,100 +1105,289 @@ const Renderer = {
   STADIUM_CHOICES: ['random', 'small', 'medium', 'large'],
 
   /*
-   * Terrace, rail and crowd. The rail runs along both touchlines only: the goals stick out
-   * past the ends, so a rail all the way round would be drawn straight through the nets.
+   * The shape of a stand, worked out once and then used by everything that draws or fills
+   * one. Both touchlines, as many rows deep as the ground has, with the seating laid on a
+   * grid so an empty seat is a real thing rather than a gap in a scatter.
+   *
+   * `dir` is which way is away from the pitch, which is all the difference there is
+   * between the two sides of the ground.
+   */
+  standRows(S) {
+    const P = CONFIG.PITCH;
+    const K = Renderer.CROWD;
+    const across = (f) => P.left + f * P.width;
+    const standOff = S.standOff || K.standOff;
+    const rowGap = S.rowGap || K.rowGap;
+
+    const sides = [
+      { dir: -1, rail: P.top - K.railInset, bands: K.bands.top },
+      { dir: 1, rail: P.bottom + K.railInset, bands: K.bands.bottom },
+    ];
+
+    // How far back the structure itself reaches: behind the last row and no further, so a
+    // one-row ground looks like a one-row ground rather than an empty stand.
+    const depth = standOff + (S.rows - 1) * rowGap + 12;
+
+    return sides.map((side) => ({
+      dir: side.dir,
+      rail: side.rail,
+      back: side.rail + side.dir * depth,
+      depth,
+      bands: side.bands.map(([a, b]) => [across(a), across(b)]),
+      rows: Array.from({ length: S.rows }, (unused, i) => ({
+        y: side.rail + side.dir * (standOff + i * rowGap),
+        scale: Math.pow(K.rowScale, i),
+      })),
+    }));
+  },
+
+  /* Where the seats are, on a fixed grid so the same seat is in the same place every time. */
+  seatsIn(band, row) {
+    const E = Renderer.SEATS;
+    const seats = [];
+    for (let x = band[0] + E.every / 2; x + E.width / 2 <= band[1]; x += E.every) {
+      seats.push({ x, y: row.y, scale: row.scale });
+    }
+    return seats;
+  },
+
+  /*
+   * The way out. One gap per block, cut into the back of the stand and placed in the middle
+   * of the block it serves, which keeps it clear of everything the HUD writes along the top
+   * and bottom of the screen.
+   */
+  exitsIn(side) {
+    const B = Renderer.BEER;
+    return side.bands.map((band) => ({
+      x: (band[0] + band[1]) / 2,
+      // Halfway into the gap, so somebody standing in it is in the wall rather than
+      // hovering behind it.
+      y: side.back - side.dir * (B.holeDepth / 2),
+    }));
+  },
+
+  /*
+   * Terrace, rail, seating and crowd. The rail runs along both touchlines only: the goals
+   * stick out past the ends, so a rail all the way round would be drawn through the nets.
    */
   createGround(scene, g) {
     const P = CONFIG.PITCH;
     const K = Renderer.CROWD;
     const S = Renderer.rollStadium();
+    const mat = Renderer.MATERIALS[S.material];
+    const sides = Renderer.standRows(S);
 
-    /*
-     * The terrace goes down first, so the rail and everyone on it stand in front of it.
-     * Steps rather than a flat block: a plain rectangle behind the crowd reads as a hole
-     * in the picture, three lines across it read as somewhere to stand.
-     */
-    if (S.terrace > 0) {
-      const back = Renderer.mix(Renderer.THEME.nightBlack, K.fence, 0.22);
-      const stepLine = Renderer.lighten(back, 0.10);
-      [[0, P.top - K.railInset], [P.bottom + K.railInset, CONFIG.CANVAS.height]]
-        .forEach(([from, to]) => {
-          g.fillStyle(back, 1).fillRect(P.left - K.railInset, from,
-            P.width + K.railInset * 2, to - from);
-          g.lineStyle(1, stepLine, 0.7);
-          for (let i = 1; i <= S.terrace; i += 1) {
-            const y = from + (to - from) * (i / (S.terrace + 1));
-            g.lineBetween(P.left - K.railInset, y, P.right + K.railInset, y);
-          }
-        });
-    }
+    sides.forEach((side) => {
+      Renderer.drawStand(g, side, S, mat);
+      Renderer.drawSeats(g, side, mat);
+    });
 
-    g.lineStyle(2, K.fence, 1);
-    [P.top - K.railInset, P.bottom + K.railInset].forEach((y) => {
-      g.lineBetween(P.left - K.railInset, y, P.right + K.railInset, y);
+    // The rail goes on last of the structure, in front of everything it holds back.
+    g.lineStyle(2, mat.rail, 1);
+    sides.forEach((side) => {
+      g.lineBetween(P.left - K.railInset, side.rail, P.right + K.railInset, side.rail);
       for (let x = P.left - K.railInset; x <= P.right + K.railInset; x += K.postEvery) {
-        g.lineBetween(x, y - K.postHalfHeight, x, y + K.postHalfHeight);
+        g.lineBetween(x, side.rail - K.postHalfHeight, x, side.rail + K.postHalfHeight);
       }
     });
 
-    /*
-     * A fresh turnout every match, spread down both touchlines and back through as many
-     * rows as this ground has. Each band gets a share of the total in proportion to how
-     * much room it has, so the crowd is the same density all the way round rather than
-     * packed at one end, and the last band takes whatever rounding left over so the total
-     * is exactly the number rolled.
-     */
-    const total = Phaser.Math.Between(S.people[0], S.people[1]);
-    const across = (f) => P.left + f * P.width;
-    const rows = [];
-    const standOff = S.standOff || K.standOff;
-    const rowGap = S.rowGap || K.rowGap;
-    for (let i = 0; i < S.rows; i += 1) {
-      const back = standOff + i * rowGap;
-      const scale = Math.pow(K.rowScale, i);
-      rows.push({ y: P.top - K.railInset - back, scale,
-        bands: K.bands.top.map(([a, b]) => [across(a), across(b)]) });
-      rows.push({ y: P.bottom + K.railInset + back, scale,
-        bands: K.bands.bottom.map(([a, b]) => [across(a), across(b)]) });
-    }
-    const roomAll = rows.reduce((sum, row) =>
-      sum + row.bands.reduce((w, [from, to]) => w + (to - from), 0), 0);
+    Renderer.fillSeats(scene, sides, S);
+  },
 
-    const lastRow = rows[rows.length - 1];
-    let placed = 0;
-    let n = 0;
+  /* The structure: a sheet of corrugated metal, or courses of brick with steps cut in it. */
+  drawStand(g, side, S, mat) {
+    const P = CONFIG.PITCH;
+    const K = Renderer.CROWD;
+    const left = P.left - K.railInset;
+    const width = P.width + K.railInset * 2;
+    const top = Math.min(side.rail, side.back);
+    const height = side.depth;
 
-    rows.forEach((row) => {
-      row.bands.forEach(([from, to], bandIndex) => {
-        const isLast = row === lastRow && bandIndex === row.bands.length - 1;
-        const count = isLast
-          ? Math.max(0, total - placed)
-          : Math.round(total * ((to - from) / roomAll));
-        placed += count;
+    g.fillStyle(mat.wall, 1);
+    g.fillRect(left, top, width, height);
 
-        for (let i = 0; i < count; i += 1) {
-          const along = count === 1 ? 0.5 : i / (count - 1);
-          const fan = scene.add.image(
-            from + along * (to - from) + Phaser.Math.Between(-K.jitterX, K.jitterX),
-            row.y + Phaser.Math.Between(-K.jitterY, K.jitterY),
-            'fan')
-            .setTint(K.jackets[n % K.jackets.length])
-            .setScale(row.scale)
-            .setDepth(Renderer.DEPTH.wall);
-          n += 1;
-
-          // Sideways only: a circle rotating on the spot would not read as anything.
-          scene.tweens.add({
-            targets: fan,
-            x: fan.x + (Phaser.Math.Between(-K.swayPx, K.swayPx) || K.swayPx),
-            duration: Phaser.Math.Between(K.swayMinMs, K.swayMaxMs),
-            delay: Phaser.Math.Between(0, 900),
-            yoyo: true,
-            repeat: -1,
-            ease: 'Sine.easeInOut',
-          });
+    if (S.material === 'metal') {
+      // Corrugation, running the way the sheet was rolled.
+      g.lineStyle(1, mat.edge, mat.jointAlpha);
+      for (let x = left; x <= left + width; x += mat.ribEvery) {
+        g.lineBetween(x, top, x, top + height);
+      }
+    } else {
+      /*
+       * Courses of brick, every other one offset by half a brick. Drawn rather than tiled
+       * because the stand is a different depth in every ground and a tile would be cut off
+       * mid-course at one end of it.
+       */
+      g.lineStyle(1, mat.edge, mat.jointAlpha);
+      let course = 0;
+      for (let y = top; y <= top + height; y += mat.courseEvery) {
+        g.lineBetween(left, y, left + width, y);
+        const offset = (course % 2) * (mat.brickEvery / 2);
+        for (let x = left + offset; x <= left + width; x += mat.brickEvery) {
+          g.lineBetween(x, y, x, Math.min(y + mat.courseEvery, top + height));
         }
+        course += 1;
+      }
+    }
+
+    // Terracing: the steps you actually stand on, cut across the brick.
+    if (S.terrace > 0) {
+      g.lineStyle(2, Renderer.lighten(mat.wall, 0.14), 0.9);
+      for (let i = 1; i <= S.terrace; i += 1) {
+        const y = top + height * (i / (S.terrace + 1));
+        g.lineBetween(left, y, left + width, y);
+      }
+    }
+
+    /*
+     * And the gaps people leave through, cut into the back of the stand rather than hung
+     * off the end of it, so the wall has a hole in it instead of a porch.
+     */
+    const B = Renderer.BEER;
+    Renderer.exitsIn(side).forEach((hole) => {
+      const y = Math.min(side.back, side.back - side.dir * B.holeDepth);
+      g.fillStyle(Renderer.THEME.nightBlack, 1);
+      g.fillRect(hole.x - B.holeWidth / 2, y, B.holeWidth, B.holeDepth);
+      g.lineStyle(2, mat.edge, 0.85);
+      g.strokeRect(hole.x - B.holeWidth / 2, y, B.holeWidth, B.holeDepth);
+    });
+
+    // A lip along the front, so the stand has a front rather than just stopping.
+    g.lineStyle(2, mat.edge, 0.8);
+    g.lineBetween(left, side.rail, left + width, side.rail);
+  },
+
+  drawSeats(g, side, mat) {
+    const E = Renderer.SEATS;
+    side.rows.forEach((row) => {
+      side.bands.forEach((band) => {
+        Renderer.seatsIn(band, row).forEach((seat) => {
+          const w = E.width * seat.scale;
+          const h = E.height * seat.scale;
+          g.fillStyle(mat.seat, 1);
+          g.fillRect(seat.x - w / 2, seat.y - h / 2, w, h);
+          g.lineStyle(1, mat.seatEdge, 0.9);
+          g.strokeRect(seat.x - w / 2, seat.y - h / 2, w, h);
+        });
       });
+    });
+  },
+
+  /*
+   * Who turned up. The seats exist whether or not anybody is in them, so the turnout is
+   * simply which of them are taken: a thin crowd reads as a thin crowd rather than as a
+   * short row, and somebody off getting a drink leaves a hole you can see.
+   */
+  fillSeats(scene, sides, S) {
+    const K = Renderer.CROWD;
+    const wanted = Phaser.Math.Between(S.people[0], S.people[1]);
+
+    const all = [];
+    sides.forEach((side) => {
+      const exits = Renderer.exitsIn(side);
+      side.rows.forEach((row) => {
+        side.bands.forEach((band, bandIndex) => {
+          Renderer.seatsIn(band, row).forEach((seat) => {
+            all.push({ seat, exit: exits[bandIndex] });
+          });
+        });
+      });
+    });
+
+    Phaser.Utils.Array.Shuffle(all);
+    const taken = all.slice(0, Math.min(wanted, all.length));
+
+    const fans = taken.map((place, n) => {
+      const seat = place.seat;
+      const fan = scene.add.image(seat.x, seat.y, 'fan')
+        .setTint(K.jackets[n % K.jackets.length])
+        .setScale(seat.scale)
+        .setDepth(Renderer.DEPTH.wall + 1);
+      fan.seat = seat;
+      fan.exit = place.exit;
+      fan.away = false;
+
+      // Sideways only: a circle rotating on the spot would not read as anything. Held on
+      // the sprite so a trip to the bar can stop it and put it back afterwards.
+      fan.swayTween = scene.tweens.add({
+        targets: fan,
+        x: seat.x + (Phaser.Math.Between(-K.swayPx, K.swayPx) || K.swayPx),
+        duration: Phaser.Math.Between(K.swayMinMs, K.swayMaxMs),
+        delay: Phaser.Math.Between(0, 900),
+        yoyo: true,
+        repeat: -1,
+        ease: 'Sine.easeInOut',
+      });
+      return fan;
+    });
+
+    Renderer.startBeerRuns(scene, fans);
+    return fans;
+  },
+
+  /*
+   * One timer for the whole crowd rather than one each: at this scale a ground can hold two
+   * hundred people, and two hundred timers to make six of them stand up is a poor trade.
+   */
+  startBeerRuns(scene, fans) {
+    const B = Renderer.BEER;
+    if (!fans.length) return;
+
+    const next = () => Phaser.Math.Between(B.everyMinMs, B.everyMaxMs);
+    scene.time.addEvent({
+      delay: next(),
+      loop: true,
+      callback: () => {
+        const away = fans.filter((f) => f.away).length;
+        if (away >= B.maxAway) return;
+        const seated = fans.filter((f) => !f.away && f.active);
+        if (!seated.length) return;
+        Renderer.sendForBeer(scene, Phaser.Utils.Array.GetRandom(seated));
+      },
+    });
+  },
+
+  sendForBeer(scene, fan) {
+    const B = Renderer.BEER;
+    fan.away = true;
+    if (fan.swayTween) fan.swayTween.pause();
+
+    /*
+     * Held on the sprite as `trip`, because a supporter has two tweens on them at once and
+     * the sway is the other one. Picking whichever the tween manager happens to list last
+     * is a coin toss.
+     */
+    // Faded out on the way, so the moment of vanishing is at the gap rather than on it.
+    fan.trip = scene.tweens.add({
+      targets: fan,
+      x: fan.exit.x,
+      y: fan.exit.y,
+      alpha: 0,
+      duration: Phaser.Math.Between(B.walkMinMs, B.walkMaxMs),
+      ease: 'Sine.easeIn',
+      onComplete: () => {
+        if (!fan.active) return;
+        // Put where it was going, not merely near it: a tween cut short partway leaves
+        // somebody half in the wall, and the arrival is what the next leg starts from.
+        fan.setPosition(fan.exit.x, fan.exit.y).setAlpha(0);
+        scene.time.delayedCall(Phaser.Math.Between(B.awayMinMs, B.awayMaxMs), () => {
+          if (!fan.active) return;
+          fan.trip = scene.tweens.add({
+            targets: fan,
+            x: fan.seat.x,
+            y: fan.seat.y,
+            alpha: 1,
+            duration: Phaser.Math.Between(B.walkMinMs, B.walkMaxMs),
+            ease: 'Sine.easeOut',
+            onComplete: () => {
+              fan.setPosition(fan.seat.x, fan.seat.y).setAlpha(1);
+              fan.away = false;
+              fan.trip = null;
+              if (fan.swayTween) fan.swayTween.resume();
+            },
+          });
+        });
+      },
     });
   },
 

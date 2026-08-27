@@ -352,20 +352,27 @@ const DrunkTests = (() => {
         detail: clashes.slice(0, 3).join(', ') || 'clear of the score, clock and both hints',
       };
     });
-    check('the stands are filled evenly, not packed down one side', () => {
-      // The bands either end have to dodge the HUD, and being over-cautious about it left
-      // a thin scatter along the top and a wall of people along the bottom.
-      const wasStadium = Renderer.stadiumChoice;
-      Renderer.stadiumChoice = 'large';
-      const g = startMatch('two');
-      const fans = g.children.list.filter((o) => o.texture && o.texture.key === 'fan');
-      const above = fans.filter((f) => f.y < CONFIG.PITCH.centreY).length;
-      const below = fans.length - above;
-      Renderer.stadiumChoice = wasStadium;
-      const ratio = Math.min(above, below) / Math.max(above, below);
+    check('both ends of the ground have room for about as many people', () => {
+      /*
+       * The blocks either side have to dodge whatever the HUD writes along the top and the
+       * bottom, and being over-cautious about it up top left a thin scatter along one
+       * touchline and a wall of people along the other.
+       *
+       * Counted in seats rather than in who turned up: the seats are the design, and the
+       * turnout is a shuffle that would make this wobble either side of any threshold.
+       */
+      const stadium = Renderer.STADIUMS.find((st) => st.key === 'large');
+      const perSide = Renderer.standRows(stadium).map((side) => {
+        let n = 0;
+        side.rows.forEach((row) => {
+          side.bands.forEach((band) => { n += Renderer.seatsIn(band, row).length; });
+        });
+        return n;
+      });
+      const ratio = Math.min(...perSide) / Math.max(...perSide);
       return {
-        pass: ratio > 0.7,
-        detail: above + ' above, ' + below + ' below (' + ratio.toFixed(2) + ')',
+        pass: ratio > 0.75,
+        detail: perSide.join(' and ') + ' seats (' + ratio.toFixed(2) + ')',
       };
     });
     check('a pinned ground is the one you get, and it is the size it claims', () => {
@@ -1262,6 +1269,174 @@ const DrunkTests = (() => {
         pass: pickable.length === 2,
         detail: pickable.map((t) => t.text).join(' | ') || 'nothing pickable',
       };
+    });
+
+    group('the stands');
+
+    const fansIn = (scene) => scene.children.list.filter((o) => o.texture
+      && o.texture.key === 'fan');
+
+    /* Every seat in the ground, however many rows and blocks it has. */
+    function allSeats(stadium) {
+      const seats = [];
+      Renderer.standRows(stadium).forEach((side) => {
+        side.rows.forEach((row) => {
+          side.bands.forEach((band) => {
+            Renderer.seatsIn(band, row).forEach((seat) => seats.push(seat));
+          });
+        });
+      });
+      return seats;
+    }
+
+    function withStadium(key, fn) {
+      const was = Renderer.stadiumChoice;
+      Renderer.stadiumChoice = key;
+      try {
+        return fn(startMatch('two'), Renderer.STADIUMS.find((s) => s.key === key));
+      } finally {
+        Renderer.stadiumChoice = was;
+      }
+    }
+
+    /*
+     * Tweens in this harness run on the wall clock rather than on the stepped one, so a
+     * trip to the bar cannot be watched happening: it is read off where each leg of it is
+     * declared to be going, and driven on by finishing the tween outright. What is being
+     * checked is the order things happen in and where each leg ends up, which is where the
+     * bugs would be.
+     */
+    /*
+     * Tweens in this harness run on the wall clock rather than on the stepped one, so a
+     * trip to the bar cannot be watched happening. Each leg is finished outright instead,
+     * and each leg puts its traveller exactly where it was taking them, so what arrives is
+     * still the real thing rather than a reading off the tween.
+     */
+    function finishTrip(obj) {
+      if (obj.trip) obj.trip.complete();
+    }
+
+    const at = (obj, x, y) => Math.abs(obj.x - x) < 0.5 && Math.abs(obj.y - y) < 0.5;
+
+    check('a small ground is metal and the bigger two are brick', () => {
+      const wrong = Renderer.STADIUMS.filter((st) => !Renderer.MATERIALS[st.material]);
+      const byKey = {};
+      Renderer.STADIUMS.forEach((st) => { byKey[st.key] = st.material; });
+      const metal = Renderer.MATERIALS.metal;
+      const brick = Renderer.MATERIALS.brick;
+      return {
+        pass: wrong.length === 0 && byKey.small === 'metal'
+          && byKey.medium === 'brick' && byKey.large === 'brick'
+          && metal.wall !== brick.wall && metal.seat !== brick.seat,
+        detail: wrong.length ? 'unknown material: ' + wrong.map((st) => st.key).join(', ')
+          : Object.keys(byKey).map((k) => k + ' ' + byKey[k]).join(', '),
+      };
+    });
+    check('there are always more seats than there are people to fill them', () => {
+      // An empty seat is the point: it is what makes a thin crowd read as a thin crowd,
+      // and what shows that somebody has gone for a drink.
+      const tight = [];
+      Renderer.STADIUMS.forEach((st) => {
+        const seats = allSeats(st).length;
+        if (seats <= st.people[1]) tight.push(st.key + ': ' + seats + ' seats, up to ' + st.people[1]);
+      });
+      return {
+        pass: tight.length === 0,
+        detail: tight.join(', ') || Renderer.STADIUMS
+          .map((st) => st.key + ' ' + allSeats(st).length).join(', '),
+      };
+    });
+    check('everybody is sat on a seat rather than near one', () => {
+      return withStadium('large', (g, stadium) => {
+        const seats = allSeats(stadium);
+        const key = (x, y) => Math.round(x) + ',' + Math.round(y);
+        const there = new Set(seats.map((st) => key(st.x, st.y)));
+        const floating = fansIn(g).filter((f) => !there.has(key(f.seat.x, f.seat.y)));
+        return {
+          pass: floating.length === 0,
+          detail: floating.length + ' off their seat, of ' + fansIn(g).length,
+        };
+      });
+    });
+    check('no two people are given the same seat', () => {
+      return withStadium('medium', (g) => {
+        const seen = new Set();
+        let doubled = 0;
+        fansIn(g).forEach((f) => {
+          const k = Math.round(f.seat.x) + ',' + Math.round(f.seat.y);
+          if (seen.has(k)) doubled += 1;
+          seen.add(k);
+        });
+        return { pass: doubled === 0, detail: doubled + ' seats sat in twice' };
+      });
+    });
+    check('every block has a way out, cut into the stand and clear of the HUD', () => {
+      return withStadium('large', (g, stadium) => {
+        const sides = Renderer.standRows(stadium);
+        const bad = [];
+        sides.forEach((side) => {
+          const exits = Renderer.exitsIn(side);
+          if (exits.length !== side.bands.length) bad.push('block without an exit');
+          exits.forEach((hole) => {
+            // Inside the structure, and on the screen.
+            const withinStand = side.dir < 0
+              ? hole.y >= side.back && hole.y <= side.rail
+              : hole.y <= side.back && hole.y >= side.rail;
+            if (!withinStand) bad.push('exit outside the stand at y' + Math.round(hole.y));
+            const box = { left: hole.x - Renderer.BEER.holeWidth / 2,
+              right: hole.x + Renderer.BEER.holeWidth / 2,
+              top: hole.y - 10, bottom: hole.y + 10 };
+            [g.hud.score, g.hud.timer, g.hud.left, g.hud.right, g.hud.hint]
+              .filter(Boolean)
+              .forEach((item) => {
+                if (overlaps(box, boundsOf(item), 0)) bad.push('exit on the HUD');
+              });
+          });
+        });
+        return { pass: bad.length === 0, detail: bad.join(', ') || 'four ways out, all clear' };
+      });
+    });
+    check('going for a beer empties the seat and then puts them back in it', () => {
+      return withStadium('medium', (g) => {
+        const fan = fansIn(g).find((f) => !f.away);
+        const seat = { x: fan.seat.x, y: fan.seat.y };
+
+        Renderer.sendForBeer(g, fan);
+        const left = fan.away === true && fan.swayTween.paused === true;
+
+        // Out through the gap in the back of the stand, gone by the time they reach it.
+        finishTrip(fan);
+        const outside = at(fan, fan.exit.x, fan.exit.y) && fan.alpha === 0;
+        const seatEmpty = !fansIn(g).some((f) => !f.away && at(f, seat.x, seat.y));
+
+        step(300);                     // long enough at the bar, on the scene clock
+        finishTrip(fan);
+
+        // And back to the seat they left, not to whichever one happens to be free.
+        const home = at(fan, seat.x, seat.y) && fan.alpha === 1;
+
+        return {
+          pass: left && outside && seatEmpty && home && fan.away === false
+            && fan.swayTween.paused === false,
+          detail: 'left ' + left + ', out through the gap ' + outside
+            + ', seat stood empty ' + seatEmpty + ', back in the same seat ' + home
+            + ', swaying again ' + (fan.swayTween.paused === false),
+        };
+      });
+    });
+    check('the stand never empties out', () => {
+      // The cap is what stops a lively crowd turning into a queue at the bar.
+      return withStadium('large', (g) => {
+        let most = 0;
+        for (let i = 0; i < 60; i += 1) {
+          step(30);
+          most = Math.max(most, fansIn(g).filter((f) => f.away).length);
+        }
+        return {
+          pass: most <= Renderer.BEER.maxAway && most > 0,
+          detail: most + ' away at once, cap is ' + Renderer.BEER.maxAway,
+        };
+      });
     });
 
     group('floodlights');
