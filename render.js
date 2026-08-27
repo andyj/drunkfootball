@@ -998,8 +998,8 @@ const Renderer = {
   /* Keyed by CONFIG.ASSIST.LEVELS, which is where what they actually do is written. */
   ASSIST_BLURB: {
     off: 'shots go down the middle and passes go where you face',
-    steady: 'a shade straighter, at the price of a few more mis-hits',
-    full: 'straighter again and leans off the keeper, and costs you more',
+    steady: 'a shade straighter, and a good deal drunker swinging at it',
+    full: 'leans off the keeper too, and you will be all over the place',
   },
 
   /* A thumb-controlled match has no key legend to correct. */

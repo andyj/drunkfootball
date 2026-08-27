@@ -91,6 +91,10 @@ const CONFIG = {
    * use to you. Nothing else on that table moves, so what you buy is a straighter shot
    * and what you pay is more shots you never hit at all.
    *
+   * Priced to hurt. A press comes off a third of the time sober, a bit over a quarter on
+   * steady and one in five with the lot, which is the point: a setting nobody would think
+   * twice about taking is not a setting, it is just the game being easier.
+   *
    * Never for the bot, neither the help nor the price. Its aim is its aimWobbleDeg, which
    * is how a difficulty is set, and it rolls the plain table like it always has.
    *
@@ -106,13 +110,13 @@ const CONFIG = {
     openLeanPx: 50,         // how far inside the post to lean, which is nowhere near a corner
     LEVELS: [
       { key: 'off' },
-      { key: 'steady', shootSpreadDeg: 5.5, passBendDeg: 10, cleanTouchScale: 0.85 },
+      { key: 'steady', shootSpreadDeg: 5.5, passBendDeg: 10, cleanTouchScale: 0.7 },
       {
         key: 'full',
         shootSpreadDeg: 4,
         passBendDeg: 22,
         leanOffKeeper: true,
-        cleanTouchScale: 0.7,
+        cleanTouchScale: 0.5,
       },
     ],
   },
