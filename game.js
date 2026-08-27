@@ -185,6 +185,13 @@ const CONFIG = {
     goalPauseMs: 1300,
     kickoffCount: 3,        // counts 3, 2, 1 then GO
     kickoffStepMs: 450,
+    /*
+     * The walk out of the tunnel, before the first kickoff of a match and only that one.
+     * Doing it again after every goal would be four seconds of walking for every thirty
+     * of football.
+     */
+    entranceWalkMs: 1400,
+    entranceGapMs: 320,     // the second one out comes a beat behind the first
   },
 
   /*
@@ -1027,8 +1034,9 @@ class GameScene extends Phaser.Scene {
     this.state = {
       scores: { red: 0, blue: 0 },
       timeLeft: CONFIG.MATCH.durationSec,
-      phase: 'kickoff',            // kickoff | play | goal | over
+      phase: 'kickoff',            // entrance | kickoff | play | goal | over
       phaseUntil: 0,
+      entrance: null,         // who is still walking out, and from where
       countLeft: 0,
       nextCountAt: 0,
       paused: false,
@@ -1125,7 +1133,7 @@ class GameScene extends Phaser.Scene {
     // Who starts with the ball is a coin toss, fresh for every match.
     this.state.kickoffTeam = Math.random() < 0.5 ? 'red' : 'blue';
     this.state.kickoffIsToss = true;
-    this.startKickoff(this.time.now);
+    this.startEntrance(this.time.now);
     Renderer.updateHUD(this.hud, this.state.scores, this.state.timeLeft);
   }
 
@@ -1236,6 +1244,10 @@ class GameScene extends Phaser.Scene {
     }
 
     switch (this.state.phase) {
+      case 'entrance':
+        this.freezeEveryone();
+        this.updateEntrance(delta);
+        break;
       case 'kickoff':
         this.freezeEveryone();
         this.updateCountdown(time);
@@ -1776,6 +1788,90 @@ class GameScene extends Phaser.Scene {
     Renderer.onGoal(this, team, this.state.scores);
   }
 
+  /*
+   * The teams come out. Everything is put where the kickoff wants it first, so the walk
+   * knows where it is walking to and the end of it is simply the kickoff starting.
+   *
+   * The bodies are switched off for the length of it: the way out runs through the wall
+   * behind the touchline, and a player shoved off it by a collision he is not allowed to
+   * have would arrive somewhere else.
+   */
+  startEntrance(now) {
+    this.resetPositions();
+    const mouth = Renderer.tunnelWalk();
+    if (!mouth) { this.startKickoff(now); return; }   // no stand, no tunnel, no walk
+
+    this.state.phase = 'entrance';
+    this.state.entrance = {
+      /*
+       * Counted in frames rather than clock time. A scene's clock reads whatever it read
+       * the last time that scene ran, which on the frame create() runs can be a long way
+       * in the past: the whole walk was over before it started, on the first tab that had
+       * been left in the background for a minute.
+       */
+      elapsed: 0,
+      walkers: this.players.map((player, i) => ({
+        player,
+        from: mouth,
+        to: { x: player.sprite.x, y: player.sprite.y },
+        delay: i * CONFIG.MATCH.entranceGapMs,
+      })),
+    };
+    this.state.entrance.walkers.forEach((walker) => {
+      walker.player.sprite.body.enable = false;
+      walker.player.sprite.setPosition(mouth.x, mouth.y);
+    });
+    // Nobody has the ball on the way out: it is already sat on the centre spot.
+    this.setOwner(null);
+    Renderer.onEntrance(this, this.state.entrance.walkers);
+  }
+
+  updateEntrance(delta) {
+    const entrance = this.state.entrance;
+    entrance.elapsed += delta;
+    let walking = false;
+    entrance.walkers.forEach((walker) => {
+      const gone = entrance.elapsed - walker.delay;
+      const f = Math.max(0, Math.min(1, gone / CONFIG.MATCH.entranceWalkMs));
+      if (f < 1) walking = true;
+      const at = this.entranceStep(walker, f);
+      walker.player.sprite.setPosition(at.x, at.y);
+      walker.player.facing = at.facing;
+      Renderer.onFacingChanged(this, walker.player);
+    });
+    if (!walking) this.finishEntrance();
+  }
+
+  /*
+   * Where a walker is, a fraction of the way out. Two legs rather than one, because a
+   * straight line from the back of the tunnel to the centre circle goes through the wall,
+   * and shared out by length rather than half the time each, so the pace does not change
+   * as he steps onto the grass.
+   */
+  entranceStep(walker, f) {
+    const gate = { x: walker.from.x, y: CONFIG.PITCH.top + CONFIG.PLAYER.radius };
+    const out = Phaser.Math.Distance.BetweenPoints(walker.from, gate);
+    const across = Phaser.Math.Distance.BetweenPoints(gate, walker.to);
+    const walked = (out + across) * f;
+    const leg = walked <= out
+      ? { a: walker.from, b: gate, t: out ? walked / out : 1 }
+      : { a: gate, b: walker.to, t: across ? (walked - out) / across : 1 };
+    return {
+      x: leg.a.x + (leg.b.x - leg.a.x) * leg.t,
+      y: leg.a.y + (leg.b.y - leg.a.y) * leg.t,
+      facing: Math.atan2(leg.b.y - leg.a.y, leg.b.x - leg.a.x),
+    };
+  }
+
+  finishEntrance() {
+    this.state.entrance.walkers.forEach((walker) => {
+      walker.player.sprite.body.enable = true;
+    });
+    Renderer.onEntranceDone(this, this.state.entrance.walkers);
+    this.state.entrance = null;
+    this.startKickoff(this.time.now);
+  }
+
   startKickoff(now) {
     this.resetPositions();
     this.state.phase = 'kickoff';
@@ -1789,7 +1885,26 @@ class GameScene extends Phaser.Scene {
     Renderer.onKickoffCount(this, this.state.countLeft);
     this.state.nextCountAt = now + CONFIG.MATCH.kickoffStepMs;
     this.state.countLeft -= 1;
-    if (this.state.countLeft < 0) this.state.phase = 'play';
+    if (this.state.countLeft < 0) {
+      this.state.phase = 'play';
+      this.wakeKeepers(now);
+    }
+  }
+
+  /*
+   * A keeper's clock should not run while the ball is out of play. It always did, and it
+   * never showed until the teams started walking out: three and a half seconds of ceremony
+   * is longer than a keeper stays awake for, so both of them were stood there swaying
+   * before anybody had kicked anything. The scoring window opens during the football.
+   */
+  wakeKeepers(now) {
+    this.keepers.forEach((keeper) => {
+      if (keeper.frozen) {
+        keeper.frozen = false;
+        Renderer.onKeeperFreeze(this, keeper, false);
+      }
+      scheduleKeeperFreeze(keeper, now);
+    });
   }
 
   resetPositions() {

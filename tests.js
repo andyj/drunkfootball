@@ -873,19 +873,28 @@ const DrunkTests = (() => {
      * object is enough: what matters is where each stroke lands, not the pixels.
      */
     function recorder() {
-      const r = { fills: [], lines: [], circles: [] };
+      // seq is the order it was drawn in, which is the only way to ask whether something
+      // ended up over the top of something else.
+      const r = { fills: [], lines: [], circles: [], rects: [], seq: 0 };
       r.fillStyle = (colour) => { r.fill = colour; };
       r.lineStyle = (width, colour, alpha) => {
         r.width = width;
         r.stroke = colour;
         r.alpha = alpha === undefined ? 1 : alpha;
       };
-      r.fillRect = (x, y, w, h) => r.fills.push({ x, y, w, h, colour: r.fill });
+      r.fillRect = (x, y, w, h) => r.fills.push({ x, y, w, h, colour: r.fill, seq: r.seq++ });
       r.lineBetween = (x1, y1, x2, y2) => r.lines.push({
-        x1, y1, x2, y2, colour: r.stroke, alpha: r.alpha, width: r.width,
+        x1, y1, x2, y2, colour: r.stroke, alpha: r.alpha, width: r.width, seq: r.seq++,
       });
-      r.fillCircle = (x, y, radius) => r.circles.push({ x, y, radius, colour: r.fill });
-      r.strokeCircle = (x, y, radius) => r.circles.push({ x, y, radius, rim: true });
+      r.strokeRect = (x, y, w, h) => r.rects.push({
+        x, y, w, h, colour: r.stroke, alpha: r.alpha, seq: r.seq++,
+      });
+      r.fillCircle = (x, y, radius) => r.circles.push({
+        x, y, radius, colour: r.fill, seq: r.seq++,
+      });
+      r.strokeCircle = (x, y, radius) => r.circles.push({
+        x, y, radius, rim: true, seq: r.seq++,
+      });
       return r;
     }
 
@@ -1100,6 +1109,23 @@ const DrunkTests = (() => {
     });
 
     group('keeper');
+    check('neither of them is asleep when play starts', () => {
+      /*
+       * A keeper's freeze runs on a clock of its own, and that clock used to run through
+       * every stoppage: the coin toss, the countdown and now the walk out add up to longer
+       * than a keeper stays awake for, so both of them were stood there swaying before
+       * anybody had kicked anything. The scoring window belongs in the football.
+       */
+      const g = startMatch('two');
+      const now = g.time.now;
+      const asleep = g.keepers.filter((k) => k.frozen).length;
+      const soonest = Math.min(...g.keepers.map((k) => k.nextFreezeAt - now));
+      return {
+        pass: asleep === 0 && soonest >= 0,
+        detail: asleep ? asleep + ' of them already frozen at the whistle'
+          : 'both awake, the first freeze due in ' + Math.round(soonest) + 'ms',
+      };
+    });
     check('a keeper that fails its roll lets the ball through', () => {
       const g = startMatch('two');
       const keeper = g.keepers[0];
@@ -2596,7 +2622,7 @@ const DrunkTests = (() => {
         pass: !onPitch && !offScreen,
         detail: onPitch ? 'standing on the pitch' : (offScreen ? 'off the screen'
           : 'at ' + Math.round(ref.x) + ',' + Math.round(ref.y) + ', '
-            + Math.round(b.top - P.bottom) + 'px past the touchline'),
+            + Math.round(P.top - b.bottom) + 'px off the near touchline'),
       };
     });
     check('he keeps out of everything the HUD writes', () => {
@@ -2646,6 +2672,253 @@ const DrunkTests = (() => {
         Sound.whistle = was;
       }
       return { pass: blown === 1, detail: blown + ' blast with the countdown off' };
+    });
+
+    group('the tunnel');
+
+    /* The hole as a box, which is what everything here wants to compare against. */
+    function tunnelBox(tunnel) {
+      return {
+        left: tunnel.x - tunnel.width / 2,
+        right: tunnel.x + tunnel.width / 2,
+        top: Math.min(tunnel.mouth, tunnel.back),
+        bottom: Math.max(tunnel.mouth, tunnel.back),
+      };
+    }
+
+    /* A match caught in the act of starting, with the teams still in the wall. */
+    function startMatchSlowly(mode) {
+      onlyScene('Game');
+      sceneByKey('Menu').scene.start('Game', { mode: mode || 'two', difficulty: 'medium' });
+      step(3);
+      return sceneByKey('Game');
+    }
+
+    check('every ground with a stand has a way out onto the pitch', () => {
+      const was = Renderer.currentStadium;
+      const got = Renderer.STADIUMS.map((S) => S.key + ' '
+        + (Renderer.tunnel(S) ? 'has one' : 'has none'));
+      const wrong = Renderer.STADIUMS.filter((S) => !!Renderer.tunnel(S) !== !!S.structure);
+      Renderer.currentStadium = was;
+      return {
+        pass: wrong.length === 0,
+        detail: wrong.length ? wrong.map((S) => S.key).join(', ') + ' the wrong way round'
+          : got.join(', '),
+      };
+    });
+    check('it is cut through the near stand, front to back', () => {
+      /*
+       * A tunnel that stops short of the back wall is a cupboard, and one that stops short
+       * of the front is a hole in the roof. It runs the full depth of the stand or it is
+       * not a tunnel.
+       */
+      const S = Renderer.STADIUMS.find((st) => st.key === 'large');
+      const near = Renderer.standRows(S)[0];
+      const t = Renderer.tunnel(S);
+      return {
+        pass: !!t && t.mouth === near.rail && t.back === near.back
+          && t.width === Renderer.TUNNEL.width,
+        detail: t ? t.width + 'px wide, from ' + t.mouth + ' back to ' + t.back
+          + ', in a stand that runs ' + near.rail + ' to ' + near.back : 'no tunnel',
+      };
+    });
+    check('it comes out through a block of seating, not past the end of one', () => {
+      // The look is a stand parted by a tunnel. A tunnel beyond the last seat is just a
+      // gap between two stands.
+      const S = Renderer.STADIUMS.find((st) => st.key === 'large');
+      const near = Renderer.standRows(S)[0];
+      const t = Renderer.tunnel(S);
+      const block = near.bands.findIndex((band) => t.x > band[0] && t.x < band[1]);
+      return {
+        pass: block !== -1,
+        detail: block === -1 ? 'at ' + Math.round(t.x) + ', outside every block'
+          : 'through block ' + block + ', which runs ' + Math.round(near.bands[block][0])
+            + ' to ' + Math.round(near.bands[block][1]),
+      };
+    });
+    check('nothing is drawn across the mouth', () => {
+      /*
+       * The stand has a lip along its front and a rail in front of that, and both of them
+       * ran the full width of the ground before there was a tunnel to come out of. Either
+       * one left whole is a bar across the mouth. Read in the order things are drawn,
+       * because the brickwork underneath is painted over by the hole itself.
+       */
+      const S = Renderer.STADIUMS.find((st) => st.key === 'large');
+      const mat = Renderer.MATERIALS[S.material];
+      const sides = Renderer.standRows(S);
+      const t = Renderer.tunnel(S);
+      const box = tunnelBox(t);
+      const rec = recorder();
+      sides.forEach((side) => Renderer.drawStand(rec, side, S, mat));
+      Renderer.drawRail(rec, sides, S, mat);
+
+      const hole = rec.fills.find((f) => Math.abs(f.x - box.left) < 0.01
+        && Math.abs(f.w - t.width) < 0.01);
+      const barred = rec.lines.filter((l) => hole && l.seq > hole.seq
+        && Math.min(l.x1, l.x2) < box.right - 1 && Math.max(l.x1, l.x2) > box.left + 1
+        && Math.min(l.y1, l.y2) <= box.bottom && Math.max(l.y1, l.y2) >= box.top);
+      // And the lip and the rail still exist either side of it, rather than being dropped.
+      const atMouth = rec.lines.filter((l) => Math.abs(l.y1 - t.mouth) < 0.01
+        && Math.abs(l.y2 - t.mouth) < 0.01);
+      return {
+        pass: !!hole && barred.length === 0 && atMouth.length === 4,
+        detail: !hole ? 'the hole itself was never drawn'
+          : barred.length ? barred.length + ' strokes across the mouth'
+            : atMouth.length + ' runs of lip and rail, none of them across the mouth',
+      };
+    });
+    check('no seat is bolted into it', () => {
+      const room = Math.max(Renderer.SEATS.width, Renderer.SEATS.height) / 2;
+      const bad = [];
+      Renderer.STADIUMS.filter((S) => S.structure).forEach((S) => {
+        const box = tunnelBox(Renderer.tunnel(S));
+        Renderer.seatPlaces(S).forEach((place) => {
+          if (overlaps({ left: place.seat.x - room, right: place.seat.x + room,
+            top: place.seat.y - room, bottom: place.seat.y + room }, box, 0)) {
+            bad.push(S.key + ' at ' + Math.round(place.seat.x));
+          }
+        });
+      });
+      return {
+        pass: bad.length === 0,
+        detail: bad.slice(0, 3).join(', ') || 'all three grounds part around it',
+      };
+    });
+    check('nobody is stood in it either', () => {
+      // The seats are laid on a grid and the people are shaken off that grid, so a seat
+      // clear of the mouth is not the same as a supporter clear of it.
+      const g = startMatch('two');
+      const t = Renderer.tunnel();
+      const box = t ? tunnelBox(t) : null;
+      const inIt = !t ? [] : g.children.list
+        .filter((o) => o.texture && o.texture.key === 'fan')
+        .filter((fan) => overlaps(boundsOf(fan), box, 0));
+      return {
+        pass: !!t && inIt.length === 0,
+        detail: !t ? 'no tunnel on this ground'
+          : inIt.length ? inIt.length + ' of them in the way'
+            : 'the mouth is clear',
+      };
+    });
+    check('the referee waits at the mouth, and not in it', () => {
+      const g = startMatch('two');
+      const t = Renderer.tunnel();
+      const box = t ? tunnelBox(t) : null;
+      const b = boundsOf(g.referee);
+      const gap = t ? b.left - box.right : 0;
+      return {
+        pass: !!t && !overlaps(b, box, 0) && gap > 0 && gap < 60,
+        detail: !t ? 'no tunnel on this ground'
+          : overlaps(b, box, 0) ? 'stood in the mouth'
+            : Math.round(gap) + 'px to the side of it',
+      };
+    });
+    check('the mouth is clear of everything the HUD writes', () => {
+      const g = startMatch('bot');
+      const box = tunnelBox(Renderer.tunnel());
+      const clashes = textsOf(g).filter((t) => overlaps(boundsOf(t), box, 0)).map((t) => t.text);
+      return { pass: clashes.length === 0, detail: clashes.join(', ') || 'clear of the lot' };
+    });
+    check('the teams walk out of it before the first kickoff', () => {
+      const g = startMatchSlowly('two');
+      const t = Renderer.tunnel();
+      const box = t ? tunnelBox(t) : null;
+      const inWall = !t ? [] : g.players.filter((p) => p.sprite.x > box.left
+        && p.sprite.x < box.right && p.sprite.y < CONFIG.PITCH.top);
+      const solid = g.players.filter((p) => p.sprite.body.enable);
+      return {
+        pass: g.state.phase === 'entrance' && inWall.length === 2 && solid.length === 0,
+        detail: 'phase ' + g.state.phase + ', ' + inWall.length
+          + ' of them in the tunnel, ' + solid.length + ' with a body switched on',
+      };
+    });
+    check('and are stood on their marks by the time the count starts', () => {
+      /*
+       * The walk is scenery. Where it puts them has to be exactly where the kickoff would
+       * have put them anyway, or the ceremony has moved the kickoff.
+       */
+      const g = startMatchSlowly('two');
+      let guard = 0;
+      while (g.state.phase === 'entrance' && guard++ < 400) step(1);
+      const marks = g.players.map((p) => ({ x: p.sprite.x, y: p.sprite.y }));
+      g.resetPositions();
+      const drift = g.players.map((p, i) => Math.round(Math.max(
+        Math.abs(p.sprite.x - marks[i].x), Math.abs(p.sprite.y - marks[i].y))));
+      const solid = g.players.filter((p) => p.sprite.body.enable).length;
+      return {
+        pass: g.state.phase === 'kickoff' && drift.every((d) => d === 0) && solid === 2
+          && g.state.entrance === null,
+        detail: 'phase ' + g.state.phase + ' after ' + guard + ' frames, off their marks by '
+          + drift.join(' and ') + 'px, ' + solid + ' of them solid again',
+      };
+    });
+    check('the walk is counted in frames, not off the clock', () => {
+      /*
+       * A scene's clock reads whatever it read the last time that scene ran, and on the
+       * frame create() runs that can be a long way in the past. Timed against it, the walk
+       * was over before it began on any tab that had been left in the background for a
+       * minute, which is exactly how this was found.
+       */
+      const g = startMatchSlowly('two');
+      const before = g.state.entrance.elapsed;
+      step(6);
+      const moved = g.state.entrance.elapsed - before;
+      const expected = 6 * (1000 / 60);
+      return {
+        pass: g.state.phase === 'entrance' && Math.abs(moved - expected) < expected * 0.3,
+        detail: 'six frames moved the walk on by ' + Math.round(moved) + 'ms of '
+          + Math.round(expected),
+      };
+    });
+    check('and they can be seen when they get there', () => {
+      /*
+       * They come up out of the dark on the way out, and a fade left half finished is a
+       * player nobody can see. However the walk ends, it ends with both of them visible.
+       */
+      const g = startMatchSlowly('two');
+      let guard = 0;
+      while (g.state.phase === 'entrance' && guard++ < 400) step(1);
+      const alphas = g.players.map((p) => p.sprite.alpha);
+      return {
+        pass: alphas.every((a) => a === 1),
+        detail: 'they arrive at alpha ' + alphas.map((a) => a.toFixed(2)).join(' and '),
+      };
+    });
+    check('nobody has the ball while they are walking out', () => {
+      const g = startMatchSlowly('two');
+      const P = CONFIG.PITCH;
+      const onSpot = Math.abs(g.ball.x - P.centreX) < 0.5 && Math.abs(g.ball.y - P.centreY) < 0.5;
+      return {
+        pass: g.state.owner === null && onSpot,
+        detail: (g.state.owner ? 'somebody has it' : 'nobody has it') + ', and it is '
+          + (onSpot ? 'on the spot' : 'at ' + Math.round(g.ball.x) + ',' + Math.round(g.ball.y)),
+      };
+    });
+    check('they come out once a match, not once a goal', () => {
+      // A walk out after every goal would be four seconds of walking for every thirty of
+      // football.
+      const g = startMatch('two');
+      g.scoreGoal('red', g.time.now);
+      let guard = 0;
+      while (g.state.phase === 'goal' && guard++ < 200) step(1);
+      return {
+        pass: g.state.phase === 'kickoff' && g.state.entrance === null,
+        detail: 'the restart went straight to ' + g.state.phase,
+      };
+    });
+    check('a ground with no tunnel gets straight on with it', () => {
+      // Sunday league is a rail and some grass. There is nothing to come out of, so
+      // nobody comes out of it.
+      const wasSkin = Renderer.activeSkin;
+      Renderer.applySkin('sunday');
+      const g = startMatchSlowly('two');
+      const phase = g.state.phase;
+      const tunnel = Renderer.tunnel();
+      Renderer.applySkin(wasSkin);
+      return {
+        pass: !tunnel && phase === 'kickoff',
+        detail: (tunnel ? 'it grew a tunnel, ' : 'no tunnel, ') + 'and it opened on ' + phase,
+      };
     });
 
     group('the settings keys');
@@ -2706,6 +2979,13 @@ const DrunkTests = (() => {
     sceneByKey('Menu').scene.start('Game', { mode: mode, difficulty: 'medium' });
     step(8);
     const g = sceneByKey('Game');
+    /*
+     * The teams walk out before the first kickoff, which is a second and a half of nothing
+     * to the sixty-odd checks that only want a match in play. Wound forward rather than
+     * skipped: the same code runs and arrives at the end of the walk on the next frame.
+     * The walk itself is checked in 'the tunnel'.
+     */
+    if (g.state.entrance) g.state.entrance.startedAt -= 99999;
     let guard = 0;
     while (g.state.phase !== 'play' && guard++ < 900) step(1);
     step(4);
@@ -2740,6 +3020,26 @@ const DrunkTests = (() => {
       g.ball.body.setVelocity(0, 0);
       g.ball.setPosition(P.centreX - 155, P.centreY - 40);
       step(2);
+      return g;
+    },
+
+    /* The teams on their way out: one across the grass, one still in the mouth. */
+    entrance(skin) {
+      Renderer.applySkin(skin || Renderer.activeSkin);
+      Renderer.stadiumChoice = 'large';
+      onlyScene('Game');
+      sceneByKey('Menu').scene.start('Game', { mode: 'two', difficulty: 'medium' });
+      step(2);
+      const g = sceneByKey('Game');
+      let guard = 0;
+      // Held at the moment the second one out steps over the touchline, which is the
+      // frame with somebody in the tunnel, somebody on the grass and the referee waiting.
+      while (g.state.phase === 'entrance' && guard++ < 400
+        && g.players[1].sprite.y < CONFIG.PITCH.top) step(1);
+      // They fade up out of the dark on a tween, and tweens run on real time, which a
+      // stage stepped through in a few milliseconds does not have. Held at full, so the
+      // frame shows where they are rather than how far the fade happened to get.
+      g.players.forEach((p) => p.sprite.setAlpha(1));
       return g;
     },
 

@@ -236,6 +236,24 @@ const Renderer = {
     holeDepth: 22,        // how far into the back of the stand the gap is cut
   },
 
+  /* How long a player takes to stop being a shape in the dark, once he is moving. */
+  ENTRANCE: { fadeMs: 420 },
+
+  /*
+   * The players' tunnel: a hole cut clean through the near stand, front to back, with the
+   * seating parting either side of it. Not on the halfway line, where a tunnel belongs,
+   * because the score and the clock are written there and a black rectangle behind the
+   * numbers is a smudge rather than a way out. Nor in the middle of the block it comes
+   * through, because that is where that block's own way out is cut. What is left is the
+   * near end of it, which is where plenty of real ones are anyway.
+   */
+  TUNNEL: {
+    alongPitch: 0.27,
+    width: 36,             // one at a time, which is how a team comes out of one anyway
+    deepen: 0.5,           // the far half darker, so it reads as going somewhere
+    deepFraction: 0.55,
+  },
+
   STADIUM_STORAGE_KEY: 'drunkfootball.stadium',
   /* 'random' rolls a fresh one every match. The other three pin it. */
   stadiumChoice: 'random',
@@ -243,13 +261,15 @@ const Renderer = {
   currentStadium: null,
 
   /*
-   * The referee. Stood off the pitch on the near touchline, close enough to the halfway
-   * line to see both goals and far enough off centre to keep out of the pause hint. He is
-   * the only figure in the ground with a job, and the only one drawn in front of the rail.
+   * The referee. Stood off the pitch at the mouth of the tunnel, which is where he waits
+   * for them: near enough to come out with the teams, far enough over that they are not
+   * walking through him. He is the only figure in the ground with a job, and the only one
+   * drawn in front of the rail.
    */
   REFEREE: {
     radius: 9,
-    alongPitch: 0.36,      // fraction of the pitch width, from the left-hand goal line
+    alongPitch: 0.36,      // fraction of the pitch width, on a ground with no tunnel
+    besideTunnel: 30,      // and beside the mouth on every ground that has one
     offLine: 12,           // how far outside the touchline he stands
     blowScale: 1.35,       // the puff he gives it
     blowMs: 190,
@@ -1401,6 +1421,76 @@ const Renderer = {
     });
   },
 
+  /*
+   * Where the tunnel is, in world coordinates, or null on a ground with no stand to cut it
+   * into. Everything that draws it, keeps seats out of it or walks somebody through it
+   * asks here rather than working it out again.
+   */
+  tunnel(stadium) {
+    const S = stadium || Renderer.currentStadium;
+    if (!S || !S.structure) return null;
+    const P = CONFIG.PITCH;
+    const T = Renderer.TUNNEL;
+    // The near side is the first one standRows lays out, and the only one with a tunnel:
+    // the far touchline has the pause hint along it and nothing to come out for.
+    const near = Renderer.standRows(S)[0];
+    return {
+      x: P.left + P.width * T.alongPitch,
+      width: T.width,
+      mouth: near.rail,     // the pitch end, level with the front of the stand
+      back: near.back,      // and the far end, at the back wall
+    };
+  },
+
+  /*
+   * The tunnel as a hole in a wall: a rectangle, the same shape everything else that
+   * blocks a seat is, so one filter covers doorways and tunnels alike.
+   */
+  tunnelGap(stadium) {
+    const t = Renderer.tunnel(stadium);
+    if (!t) return null;
+    const K = Renderer.CROWD;
+    /*
+     * Wider than the hole, because what has to be clear of the mouth is not the seat but
+     * whoever is in it: he is shaken off his seat by jitterX and he is a figure wide on
+     * top of that, so a seat merely clear of the edge still puts a shoulder in the
+     * tunnel. The doorways at the back of a stand are left as they are, where somebody
+     * half in the entrance is somebody on their way to the bar.
+     */
+    return {
+      x: t.x,
+      y: (t.mouth + t.back) / 2,
+      width: t.width + 2 * (K.jitterX + K.figureRadius),
+      height: Math.abs(t.mouth - t.back),
+    };
+  },
+
+  /*
+   * Where somebody stands when he is still in the tunnel: at the back of it, out of the
+   * light, facing the pitch. Handed to the match so the teams can walk out of it, because
+   * the shape of the ground is worked out here rather than there.
+   */
+  tunnelWalk() {
+    const t = Renderer.tunnel();
+    if (!t) return null;
+    const r = CONFIG.PLAYER.radius;
+    return { x: t.x, y: Math.min(t.mouth, t.back) + r };
+  },
+
+  /*
+   * Beside the mouth, or on the near touchline at a ground with no stand, which is a
+   * ground with no tunnel either.
+   */
+  refereeSpot() {
+    const P = CONFIG.PITCH;
+    const R = Renderer.REFEREE;
+    const t = Renderer.tunnel();
+    return {
+      x: t ? t.x + t.width / 2 + R.besideTunnel : P.left + P.width * R.alongPitch,
+      y: P.top - R.offLine - R.radius,
+    };
+  },
+
   /* The same grid as a row of seats, stood on its end. */
   seatsDown(end, column) {
     const E = Renderer.SEATS;
@@ -1452,12 +1542,27 @@ const Renderer = {
   },
 
   /*
+   * Every hole in a block of seating: the way out at the back of it, and on the near side
+   * the players' tunnel where it comes through. One list per block, so a seat is checked
+   * against the holes in its own block and nothing else.
+   */
+  standGaps(side, S) {
+    const exits = Renderer.exitsIn(side);
+    const tunnel = side.dir < 0 ? Renderer.tunnelGap(S) : null;
+    return side.bands.map((band, i) => (tunnel && tunnel.x > band[0] && tunnel.x < band[1]
+      ? [exits[i], tunnel] : [exits[i]]));
+  },
+
+  /* Whether a seat can be bolted down where it is: clear of every hole in its block. */
+  seatFits(seat, gaps) {
+    return gaps.every((gap) => Renderer.clearOfDoorway(seat, gap));
+  },
+
+  /*
    * Terrace, rail, seating and crowd. The rail runs along both touchlines only: the goals
    * stick out past the ends, so a rail all the way round would be drawn through the nets.
    */
   createGround(scene, g) {
-    const P = CONFIG.PITCH;
-    const K = Renderer.CROWD;
     const S = Renderer.rollStadium();
     const mat = Renderer.MATERIALS[S.material];
     const sides = Renderer.standRows(S);
@@ -1470,7 +1575,7 @@ const Renderer = {
     if (S.structure) {
       sides.forEach((side) => {
         Renderer.drawStand(g, side, S, mat);
-        Renderer.drawSeats(g, side, mat);
+        Renderer.drawSeats(g, side, mat, S);
       });
       Renderer.endStands(S).forEach((end) => {
         Renderer.drawEndStand(g, end, S, mat);
@@ -1479,13 +1584,7 @@ const Renderer = {
     }
 
     // The rail goes on last of the structure, in front of everything it holds back.
-    g.lineStyle(2, mat.rail, 1);
-    sides.forEach((side) => {
-      g.lineBetween(P.left - K.railInset, side.rail, P.right + K.railInset, side.rail);
-      for (let x = P.left - K.railInset; x <= P.right + K.railInset; x += K.postEvery) {
-        g.lineBetween(x, side.rail - K.postHalfHeight, x, side.rail + K.postHalfHeight);
-      }
-    });
+    Renderer.drawRail(g, sides, S, mat);
 
     Renderer.fillSeats(scene, S);
     Renderer.createReferee(scene);
@@ -1497,13 +1596,9 @@ const Renderer = {
    * last one, so a referee left lying about is a reference to a destroyed sprite.
    */
   createReferee(scene) {
-    const P = CONFIG.PITCH;
-    const R = Renderer.REFEREE;
-    scene.referee = scene.add.image(
-      P.left + P.width * R.alongPitch,
-      P.bottom + R.offLine + R.radius,
-      'referee',
-    ).setDepth(Renderer.DEPTH.wall + 2);
+    const spot = Renderer.refereeSpot();
+    scene.referee = scene.add.image(spot.x, spot.y, 'referee')
+      .setDepth(Renderer.DEPTH.wall + 2);
     return scene.referee;
   },
 
@@ -1657,9 +1752,76 @@ const Renderer = {
       g.strokeRect(hole.x - B.holeWidth / 2, y, B.holeWidth, B.holeDepth);
     });
 
-    // A lip along the front, so the stand has a front rather than just stopping.
+    // And the one the players come out of, which goes all the way through.
+    const tunnel = side.dir < 0 ? Renderer.tunnel(S) : null;
+    if (tunnel) Renderer.drawTunnel(g, tunnel, mat);
+
+    /*
+     * A lip along the front, so the stand has a front rather than just stopping, broken
+     * either side of the tunnel: a line drawn across the mouth walls it up.
+     */
     g.lineStyle(2, mat.edge, 0.8);
-    g.lineBetween(left, side.rail, left + width, side.rail);
+    if (tunnel) {
+      g.lineBetween(left, side.rail, tunnel.x - tunnel.width / 2, side.rail);
+      g.lineBetween(tunnel.x + tunnel.width / 2, side.rail, left + width, side.rail);
+    } else {
+      g.lineBetween(left, side.rail, left + width, side.rail);
+    }
+  },
+
+  /*
+   * The rail along both touchlines, stopping either side of the tunnel: a fence drawn
+   * across the mouth is a fence the teams would have to come through. Its own function
+   * because where it stops is worth being able to check.
+   */
+  drawRail(g, sides, S, mat) {
+    const P = CONFIG.PITCH;
+    const K = Renderer.CROWD;
+    const left = P.left - K.railInset;
+    const right = P.right + K.railInset;
+
+    g.lineStyle(2, mat.rail, 1);
+    sides.forEach((side) => {
+      const gap = side.dir < 0 ? Renderer.tunnel(S) : null;
+      const from = gap ? gap.x - gap.width / 2 : 0;
+      const to = gap ? gap.x + gap.width / 2 : 0;
+      if (gap) {
+        g.lineBetween(left, side.rail, from, side.rail);
+        g.lineBetween(to, side.rail, right, side.rail);
+      } else {
+        g.lineBetween(left, side.rail, right, side.rail);
+      }
+      for (let x = left; x <= right; x += K.postEvery) {
+        if (!gap || x < from || x > to) {
+          g.lineBetween(x, side.rail - K.postHalfHeight, x, side.rail + K.postHalfHeight);
+        }
+      }
+    });
+  },
+
+  /*
+   * The way out onto the pitch. A hole through the stand rather than a doorway in the back
+   * of it, dark the whole way, with the far half darker still so it reads as running
+   * somewhere rather than as a patch of paint. Drawn over the brick and the terracing,
+   * because a stand is built first and cut through afterwards.
+   */
+  drawTunnel(g, tunnel, mat) {
+    const T = Renderer.TUNNEL;
+    const left = tunnel.x - tunnel.width / 2;
+    const top = Math.min(tunnel.mouth, tunnel.back);
+    const height = Math.abs(tunnel.mouth - tunnel.back);
+    const deep = height * T.deepFraction;
+
+    g.fillStyle(Renderer.THEME.nightBlack, 1);
+    g.fillRect(left, top, tunnel.width, height);
+    g.fillStyle(0x000000, T.deepen);
+    g.fillRect(left, tunnel.back < tunnel.mouth ? top : top + height - deep,
+      tunnel.width, deep);
+
+    // Two walls and no lintel: the mouth is open and the back of it is not a wall.
+    g.lineStyle(2, mat.edge, 0.9);
+    g.lineBetween(left, top, left, top + height);
+    g.lineBetween(left + tunnel.width, top, left + tunnel.width, top + height);
   },
 
   /* One seat, the size it is drawn at telling you which way its stand is turned. */
@@ -1670,13 +1832,13 @@ const Renderer = {
     g.strokeRect(seat.x - w / 2, seat.y - h / 2, w, h);
   },
 
-  drawSeats(g, side, mat) {
+  drawSeats(g, side, mat, S) {
     const E = Renderer.SEATS;
-    const exits = Renderer.exitsIn(side);
+    const gaps = Renderer.standGaps(side, S);
     side.rows.forEach((row) => {
       side.bands.forEach((band, bandIndex) => {
         Renderer.seatsIn(band, row)
-          .filter((seat) => Renderer.clearOfDoorway(seat, exits[bandIndex]))
+          .filter((seat) => Renderer.seatFits(seat, gaps[bandIndex]))
           .forEach((seat) => Renderer.drawSeat(g, seat, mat,
             E.width * seat.scale, E.height * seat.scale));
       });
@@ -1693,10 +1855,13 @@ const Renderer = {
     const places = [];
     Renderer.standRows(S).forEach((side) => {
       const exits = Renderer.exitsIn(side);
+      const gaps = Renderer.standGaps(side, S);
       side.rows.forEach((row) => {
         side.bands.forEach((band, bandIndex) => {
           Renderer.seatsIn(band, row)
-            .filter((seat) => Renderer.clearOfDoorway(seat, exits[bandIndex]))
+            // Nobody is sat in the tunnel either, but a drink is still a walk out through
+            // the back: the way out of a stand is not the way out onto the pitch.
+            .filter((seat) => Renderer.seatFits(seat, gaps[bandIndex]))
             .forEach((seat) => places.push({ seat, exit: exits[bandIndex] }));
         });
       });
@@ -2390,6 +2555,38 @@ const Renderer = {
           onComplete: () => label.destroy(),
         });
       },
+    });
+  },
+
+  /*
+   * Out of the dark. The mouth is nearly black, and a player stepping straight out of it
+   * at full brightness looks like he was stood against the wall all along, so each of them
+   * comes up over the first stride and is himself by the time he reaches the grass.
+   *
+   * The delay is the match's, not this one's: it decides the order they come out in.
+   */
+  onEntrance(scene, walkers) {
+    walkers.forEach((walker) => {
+      const sprite = walker.player.sprite;
+      sprite.setAlpha(0);
+      scene.tweens.add({
+        targets: sprite,
+        alpha: 1,
+        delay: walker.delay,
+        duration: Renderer.ENTRANCE.fadeMs,
+        ease: 'Quad.easeOut',
+      });
+    });
+  },
+
+  /*
+   * However the walk ended, they are out on the grass now and they are visible. A fade
+   * left half finished is a player nobody can see, which is a worse bug than no fade.
+   */
+  onEntranceDone(scene, walkers) {
+    walkers.forEach((walker) => {
+      scene.tweens.killTweensOf(walker.player.sprite);
+      walker.player.sprite.setAlpha(1);
     });
   },
 
