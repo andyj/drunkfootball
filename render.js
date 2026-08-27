@@ -397,9 +397,19 @@ const Renderer = {
     const P = Renderer.PALETTE;
     const g = scene.make.graphics({ x: 0, y: 0 }, false);
 
-    // Safe here and nowhere else: this scene has not created anything yet, so no sprite
-    // is left holding a texture that is about to be destroyed.
-    if (Renderer.bakedVersion !== Renderer.paletteVersion) {
+    /*
+     * Retiring a texture is only safe when nothing else can be holding it. This scene has
+     * not created anything yet, but another may be alive underneath: settings opened from
+     * a paused match runs on top of a game full of sprites using these very textures, and
+     * a paused scene still renders. So the purge waits, and bakedVersion is deliberately
+     * left stale so the next scene that does start alone picks it up.
+     */
+    // Active is not the test: a paused or sleeping scene still renders, and still holds
+    // every texture its sprites were made with.
+    const othersAlive = scene.scene.manager.getScenes(false).some((s) => s !== scene
+      && (s.sys.isActive() || s.sys.isPaused() || s.sys.isSleeping()));
+
+    if (Renderer.bakedVersion !== Renderer.paletteVersion && !othersAlive) {
       Renderer.PALETTE_DEPENDENT_TEXTURES.forEach((key) => {
         if (scene.textures.exists(key)) scene.textures.remove(key);
       });
@@ -956,14 +966,44 @@ const Renderer = {
     hud.timer.setText(Renderer.formatClock(timeLeft));
   },
 
-  showPause(scene) {
-    const shade = scene.add.image(CONFIG.CANVAS.width / 2, CONFIG.CANVAS.height / 2, 'px')
+  /* Named so the test suite can check the card really does cover every line on it. */
+  PAUSE_CARD: { width: 460, height: 380 },
+
+  /*
+   * The pause screen is a menu rather than a notice. Every line answers to a click and to
+   * a key, through the same handlers, so the two can never disagree.
+   */
+  showPause(scene, handlers) {
+    const cx = CONFIG.CANVAS.width / 2;
+    const cy = CONFIG.CANVAS.height / 2;
+
+    const shade = scene.add.image(cx, cy, 'px')
       .setDisplaySize(CONFIG.CANVAS.width, CONFIG.CANVAS.height)
-      .setTint(0x000000).setAlpha(0.55).setDepth(Renderer.DEPTH.overlay);
+      .setTint(Renderer.THEME.nightBlack).setAlpha(0.72).setDepth(Renderer.DEPTH.overlay);
+
+    /*
+     * The menu sits on a solid card, dressed like the shootout panel. A dimmed pitch alone
+     * is not enough: pause during the kickoff banner or over an outcome label and two
+     * pieces of text share the same middle of the screen. The card takes the whole block
+     * out of the pitch's way whatever happens to be under it.
+     */
+    const cardY = cy + 15;
+    const card = scene.add.image(cx, cardY, 'px')
+      .setDisplaySize(Renderer.PAUSE_CARD.width, Renderer.PAUSE_CARD.height)
+      .setTint(Renderer.THEME.nightBlack).setAlpha(0.97).setDepth(Renderer.DEPTH.overlay);
+    const rule = scene.add.image(cx, cardY - Renderer.PAUSE_CARD.height / 2, 'px')
+      .setDisplaySize(Renderer.PAUSE_CARD.width, 8)
+      .setTint(Renderer.THEME.lagerYellow).setDepth(Renderer.DEPTH.overlay);
+
     return [
       shade,
-      Renderer.centred(scene, CONFIG.CANVAS.height / 2, 'PAUSED', 56),
-      Renderer.centred(scene, CONFIG.CANVAS.height / 2 + 48, 'P or ESC to resume', 18, Renderer.CSS.dim),
+      card,
+      rule,
+      Renderer.centredDisplay(scene, cy - 110, 'PAUSED', 76),
+      Renderer.option(scene, cy - 10, 'R   RESUME', 34, handlers.resume),
+      Renderer.option(scene, cy + 46, 'S   SETTINGS', 34, handlers.settings),
+      Renderer.option(scene, cy + 102, 'Q   QUIT TO MENU', 34, handlers.quit),
+      Renderer.centred(scene, cy + 168, 'P or ESC also resumes', 16, Renderer.CSS.dim),
     ];
   },
 
@@ -1442,11 +1482,17 @@ const Renderer = {
    */
   onTick(scene, view, time, delta) {
     const J = Renderer.JUICE;
+
+    // A scene being torn down can take one more update after its objects have gone, so
+    // nothing here may assume the bodies it is about to read still exist.
+    if (!view.ball || !view.ball.body) return;
+
     if (!scene.juiceState) scene.juiceState = { nextTrailAt: 0 };
 
     if (J.drunkSway.on) {
       const amplitude = Phaser.Math.DegToRad(J.drunkSway.degrees);
       view.players.forEach((player, i) => {
+        if (!player.sprite || !player.sprite.body) return;
         // Not while they are on the floor: the faceplant owns the rotation until they are up.
         if (time < player.stunnedUntil) return;
         const moving = player.sprite.body.speed > 5;
@@ -1582,8 +1628,15 @@ const Renderer = {
       .fillStyle(Renderer.PALETTE.grass, 1)
       .fillRect(0, 205, CONFIG.CANVAS.width, 405);   // deep enough for five skins and the key table
 
-    Renderer.centred(scene, 110, 'SETTINGS', 66);
-    Renderer.centred(scene, 166, 'kept between sessions', 20, C.dim);
+    Renderer.centredDisplay(scene, 110, 'SETTINGS', 72);
+    /*
+     * Opened from a paused match, a new skin cannot repaint the match already drawn behind
+     * this screen, because it is using the textures baked for the old one. Saying so beats
+     * letting someone pick a skin and watch nothing happen.
+     */
+    Renderer.centred(scene, 172, state.inMatch
+      ? 'kept between sessions  ·  a new skin starts with the next match'
+      : 'kept between sessions', 20, C.dim);
 
     Renderer.text(scene, nameX, 220, 'SKIN', 18, C.accent).setDepth(Renderer.DEPTH.overlay);
 
@@ -1628,7 +1681,8 @@ const Renderer = {
     Renderer.centred(scene, 670,
       'the game as it was when blue shot with - and =', 14, C.dim);
 
-    Renderer.centred(scene, 700, 'ESC  to go back', 20, C.dim);
+    Renderer.centred(scene, 700,
+      state.inMatch ? 'ESC  back to the match' : 'ESC  to go back', 20, C.dim);
   },
 
   /* Same furniture again, so the three menus feel like one screen changing its mind. */

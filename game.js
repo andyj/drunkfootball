@@ -389,7 +389,8 @@ function chooseSkin(scene, key) {
   Renderer.applySkin(key);
   // The restart is what repaints: the new scene rebakes the stale textures before it has
   // drawn anything, which is the only moment it is safe to throw the old ones away.
-  scene.scene.restart();
+  if (scene.refresh) scene.refresh();
+  else scene.scene.restart();
 }
 
 /* ==========================================================================
@@ -456,9 +457,25 @@ class PlayScene extends Phaser.Scene {
 class SettingsScene extends Phaser.Scene {
   constructor() { super('Settings'); }
 
+  /*
+   * Reached either from the front screen, where leaving means the menu, or from a paused
+   * match, where it is running on top of a game that is still there and leaving means
+   * going back to it.
+   */
+  init(data) {
+    const from = data && data.returnTo;
+    // Phaser hands a scene its previous data again when it is started without any, so a
+    // returnTo can outlive the match that set it. There is a way back only if that scene
+    // really is still sitting underneath us, paused.
+    this.returnTo = from && this.scene.isPaused(from) ? from : null;
+  }
+
   create() {
     Renderer.beginScene(this);
-    Renderer.createSettings(this, { mouseClicks: AIM.redUsesMouse }, {
+    Renderer.createSettings(this, {
+      mouseClicks: AIM.redUsesMouse,
+      inMatch: !!this.returnTo,
+    }, {
       skin: (key) => chooseSkin(this, key),
       mouse: () => this.toggleMouse(),
       legacy: () => { window.location.href = LEGACY_URL; },
@@ -472,10 +489,28 @@ class SettingsScene extends Phaser.Scene {
     this.backKey = this.input.keyboard.addKey('ESC');
   }
 
+  /*
+   * Back where we came from. Launched over a paused match this only stops itself, leaving
+   * the match exactly as it was, still paused with its menu up.
+   */
+  leave() {
+    if (!this.returnTo) {
+      this.scene.start('Menu');
+      return;
+    }
+    this.scene.resume(this.returnTo);
+    this.scene.stop();
+  }
+
+  /* Restarting has to carry where we came from, or leaving would forget the match. */
+  refresh() {
+    this.scene.restart({ returnTo: this.returnTo });
+  }
+
   toggleMouse() {
     AIM.redUsesMouse = !AIM.redUsesMouse;
     savePrefs();
-    this.scene.restart();
+    this.refresh();
   }
 
 
@@ -483,7 +518,7 @@ class SettingsScene extends Phaser.Scene {
     const JustDown = Phaser.Input.Keyboard.JustDown;
 
     if (JustDown(this.backKey)) {
-      this.scene.start('Menu');
+      this.leave();
       return;
     }
     if (JustDown(this.keys.M)) {
@@ -649,7 +684,7 @@ class GameScene extends Phaser.Scene {
     });
 
     this.keys = { red: keysFor(this, 'red'), blue: keysFor(this, 'blue') };
-    this.systemKeys = this.input.keyboard.addKeys('P,ESC,M');
+    this.systemKeys = this.input.keyboard.addKeys('P,ESC,M,R,S,Q');
 
     // Without this the browser's own menu swallows every right click.
     this.input.mouse.disableContextMenu();
@@ -753,6 +788,10 @@ class GameScene extends Phaser.Scene {
   /* --------------------------------------------------------------- loop */
 
   update(time, delta) {
+    // A scene that has been stopped can still take one more update after its objects have
+    // been destroyed, and everything below here assumes there is a match to run.
+    if (!this.ball || !this.ball.body) return;
+
     Renderer.onTick(this, this.view, time, delta);
 
     const pausePressed = Phaser.Input.Keyboard.JustDown(this.systemKeys.P);
@@ -768,6 +807,13 @@ class GameScene extends Phaser.Scene {
     }
 
     if (this.state.paused || this.state.phase === 'over') {
+      // The pause menu's own keys, live only while it is up.
+      if (this.state.paused) {
+        const JustDown = Phaser.Input.Keyboard.JustDown;
+        if (JustDown(this.systemKeys.R)) this.togglePause();
+        else if (JustDown(this.systemKeys.S)) this.openSettings();
+        else if (JustDown(this.systemKeys.Q)) this.scene.start('Menu');
+      }
       this.freezeEveryone();
       return;
     }
@@ -1285,11 +1331,26 @@ class GameScene extends Phaser.Scene {
     if (this.state.phase === 'over') return;
     this.state.paused = !this.state.paused;
     if (this.state.paused) {
-      this.pauseView = Renderer.showPause(this);
+      this.pauseView = Renderer.showPause(this, {
+        resume: () => this.togglePause(),
+        settings: () => this.openSettings(),
+        quit: () => this.scene.start('Menu'),
+      });
     } else {
       Renderer.hidePause(this, this.pauseView);
       this.pauseView = null;
     }
+  }
+
+  /*
+   * Settings runs on top of the match rather than replacing it, so the game is still there
+   * to come back to. This scene is properly paused first, not merely logically: otherwise
+   * it keeps reading the keyboard underneath and answers to the same keys settings uses.
+   */
+  openSettings() {
+    this.scene.pause();
+    this.scene.launch('Settings', { returnTo: this.scene.key });
+    this.scene.bringToTop('Settings');
   }
 
   endMatch() {

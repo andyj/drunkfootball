@@ -678,6 +678,108 @@ const DrunkTests = (() => {
                detail: 'penalty table still weighted, total ' + table };
     });
 
+    group('pause menu');
+    check('pausing offers resume, settings and quit', () => {
+      const g = startMatch('two');
+      g.togglePause();
+      step(2);
+      const offered = textsOf(g).map((t) => t.text).join(' | ');
+      const has = (word) => offered.indexOf(word) !== -1;
+      return {
+        pass: g.state.paused && has('RESUME') && has('SETTINGS') && has('QUIT'),
+        detail: offered.slice(0, 110),
+      };
+    });
+    check('the menu card covers every line printed on it', () => {
+      // Pause mid-kickoff on purpose: the banner and the countdown both live in the middle
+      // of the screen, which is exactly where the menu goes.
+      const g = startMatch('two');
+      Renderer.onKickoffCount(g, 3);
+      g.togglePause();
+      step(2);
+      const card = g.pauseView.find((o) => o.texture && o.texture.key === 'px'
+        && Math.round(o.displayWidth) === Renderer.PAUSE_CARD.width);
+      if (!card) return { pass: false, detail: 'no card behind the menu' };
+      const box = boundsOf(card);
+      const spills = g.pauseView.filter((o) => o.text)
+        .filter((o) => {
+          const b = boundsOf(o);
+          return b.left < box.left || b.right > box.right || b.top < box.top || b.bottom > box.bottom;
+        })
+        .map((o) => o.text);
+      return {
+        pass: card.alpha > 0.95 && spills.length === 0,
+        detail: spills.length ? 'spills: ' + spills.join(', ') : 'card alpha ' + card.alpha,
+      };
+    });
+    check('resuming clears the menu', () => {
+      const g = startMatch('two');
+      g.togglePause();
+      step(2);
+      g.togglePause();
+      step(2);
+      const left = textsOf(g).filter((t) => t.text.indexOf('RESUME') !== -1).length;
+      return { pass: !g.state.paused && left === 0, detail: left + ' menu items left behind' };
+    });
+    /* The whole point of opening settings from a pause: the match has to survive it. */
+    check('settings opens over the match without ending it', () => {
+      const g = startMatch('two');
+      g.state.scores.red = 2;
+      g.togglePause();
+      step(2);
+      g.openSettings();
+      step(4);
+      const settingsUp = window.game.scene.isActive('Settings');
+      const matchAlive = window.game.scene.getScene('Game').state.scores.red === 2;
+      const matchAsleep = window.game.scene.isPaused('Game');
+      return {
+        pass: settingsUp && matchAlive && matchAsleep,
+        detail: 'settings ' + settingsUp + ', score kept ' + matchAlive + ', match paused ' + matchAsleep,
+      };
+    });
+    check('leaving settings returns to the match, still paused', () => {
+      const g = startMatch('two');
+      g.state.scores.blue = 3;
+      g.togglePause();
+      step(2);
+      g.openSettings();
+      step(4);
+      sceneByKey('Settings').leave();
+      step(4);
+      const back = sceneByKey('Game');
+      return {
+        pass: !window.game.scene.isActive('Settings') && back.state.scores.blue === 3
+          && back.state.paused === true,
+        detail: 'score ' + back.state.scores.blue + ', paused ' + back.state.paused,
+      };
+    });
+    check('settings from the front screen still goes back to the menu', () => {
+      // Cleared right down first: a match left running from the previous check would keep
+      // updating underneath and this would be testing the wrong thing.
+      scenes().forEach((s) => window.game.scene.stop(s.scene.key));
+      step(2);
+      window.game.scene.start('Settings');
+      step(6);
+      sceneByKey('Settings').leave();
+      step(6);
+      return {
+        pass: window.game.scene.isActive('Menu'),
+        detail: 'landed on ' + scenes().filter((s) => s.sys.isActive()).map((s) => s.scene.key).join(',')
+      };
+    });
+    check('changing a skin mid-pause keeps the way back', () => {
+      const g = startMatch('two');
+      g.togglePause();
+      step(2);
+      g.openSettings();
+      step(4);
+      chooseSkin(sceneByKey('Settings'), 'frozen');
+      step(6);
+      const kept = sceneByKey('Settings').returnTo === 'Game';
+      Renderer.applySkin('sixpints');
+      return { pass: kept, detail: 'returnTo is ' + sceneByKey('Settings').returnTo };
+    });
+
     group('hooks');
     check('every announced event has a renderer to receive it', () => {
       const want = ['onFacingChanged', 'onOutcome', 'onGoal', 'onKickoff', 'onKickoffCount',
@@ -781,6 +883,23 @@ const DrunkTests = (() => {
 
     crowd() {
       return stages.match('sunday');
+    },
+
+    pause() {
+      const g = stages.match();
+      g.togglePause();
+      step(4);
+      return g;
+    },
+
+    /* Settings running on top of a match that is still there, paused, behind it. */
+    pausedSettings() {
+      const g = stages.match();
+      g.togglePause();
+      step(2);
+      g.openSettings();
+      step(6);
+      return sceneByKey('Settings');
     },
 
     goal() {
