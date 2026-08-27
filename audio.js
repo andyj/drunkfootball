@@ -41,13 +41,22 @@ const Sound = {
    * they are useless scattered through the code that makes them.
    */
   MIX: {
+    /*
+     * A pea whistle is two tones a few dozen hertz apart, beating against each other, with
+     * a great deal of air behind them. Written down as a fourth apart it was two clean
+     * sine tones sounding at once, which is not a whistle: it is a smoke alarm, and it
+     * rang in the ears long after it stopped. Close them up, drop the pitch out of the
+     * most piercing part of hearing, take the edge off the top with a filter and let the
+     * air carry most of it.
+     */
     whistle: {
-      tones: [2340, 2790],   // close enough to beat, which is what makes a whistle shrill
-      rattleHz: 19,          // the pea going round
-      rattleDepth: 46,
-      breath: 0.22,          // air, at the start of the blast
-      level: 0.5,
-      ms: 400,
+      tones: [2180, 2216],   // 36Hz apart, which beats rather than sounding two notes
+      rattleHz: 21,          // the pea going round
+      rattleDepth: 55,
+      breath: 0.5,           // air, which is most of what a whistle actually is
+      soften: 3200,          // and the edge off the top of it
+      level: 0.34,
+      ms: 320,
     },
     groan: {
       /*
@@ -210,6 +219,12 @@ const Sound = {
     out.connect(Sound.master);
     Sound.envelope(out, at, secs, W.level, 0.012);
 
+    // Everything tonal goes through this: a sine pair with nothing over it is a test tone.
+    const soft = ctx.createBiquadFilter();
+    soft.type = 'lowpass';
+    soft.frequency.value = W.soften;
+    soft.connect(out);
+
     const pea = ctx.createOscillator();
     pea.frequency.value = W.rattleHz;
     const peaDepth = ctx.createGain();
@@ -221,18 +236,20 @@ const Sound = {
       osc.type = 'sine';
       osc.frequency.value = hz;
       peaDepth.connect(osc.frequency);
-      osc.connect(out);
+      osc.connect(soft);
       osc.start(at);
       osc.stop(at + secs);
     });
 
+    // The air, all the way through rather than only at the front: it is the breath that
+    // makes it a whistle rather than a note.
     const air = Sound.noise();
     const airBand = ctx.createBiquadFilter();
     airBand.type = 'bandpass';
     airBand.frequency.value = W.tones[0];
-    airBand.Q.value = 0.9;
+    airBand.Q.value = 1.6;
     const airLevel = ctx.createGain();
-    Sound.envelope(airLevel, at, secs * 0.4, W.breath, 0.008);
+    Sound.envelope(airLevel, at, secs, W.breath, 0.008);
     air.connect(airBand).connect(airLevel).connect(out);
     air.start(at);
     air.stop(at + secs);

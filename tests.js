@@ -208,6 +208,25 @@ const DrunkTests = (() => {
     return least;
   }
 
+  /*
+   * How much the loudness moves from one moment to the next, measured against how loud it
+   * is: a tone held flat barely moves, two tones close enough to beat against each other
+   * move a great deal. The difference between a whistle and an alarm.
+   */
+  function ripple(pcm, from, to, windows) {
+    const region = slice(pcm, from, to);
+    const win = Math.max(1, Math.floor(region.length / windows));
+    const level = [];
+    for (let i = 0; i + win <= region.length; i += win) {
+      level.push(rms(region.subarray(i, i + win)));
+    }
+    let moved = 0;
+    let mean = 0;
+    for (let i = 1; i < level.length; i += 1) moved += Math.abs(level[i] - level[i - 1]);
+    level.forEach((v) => { mean += v; });
+    return mean === 0 ? 0 : (moved / (level.length - 1)) / (mean / level.length);
+  }
+
   /* ------------------------------------------------------------------- checks */
 
   function runAll() {
@@ -2470,6 +2489,23 @@ const DrunkTests = (() => {
           + after.toFixed(4) + ' by the end',
       };
     });
+    check('the whistle warbles rather than ringing like an alarm', () => {
+      /*
+       * A pea whistle is two tones a few dozen hertz apart beating against each other.
+       * These were written down a fourth apart, which is not a beat, it is a chord: two
+       * clean sine tones sounding at once, up in the most piercing part of hearing, and it
+       * rang in the ears long after it stopped. A chord holds still; a beat does not.
+       */
+      const pcm = heard.whistle;
+      if (!pcm) return { pass: false, detail: 'nothing rendered' };
+      const moved = ripple(pcm, 0.06, 0.31, 45);
+      const apart = Math.abs(Sound.MIX.whistle.tones[0] - Sound.MIX.whistle.tones[1]);
+      return {
+        pass: moved > 0.2,
+        detail: 'tones ' + apart + 'Hz apart, and the blast moves ' + moved.toFixed(2)
+          + ' of its own level from one moment to the next',
+      };
+    });
     check('the groan slides down and the cheer slides up', () => {
       /*
        * The one thing that makes disappointment sound like disappointment rather than like
@@ -2497,13 +2533,20 @@ const DrunkTests = (() => {
       return { pass: peak(pcm) === 0, detail: 'peak ' + peak(pcm) };
     });
     check('the volume setting is on the way out to the speakers', () => {
-      // Half the steps is not half the loudness: the bar is curved, and this is the curve.
+      /*
+       * Half the steps is not half the loudness: the bar is curved, and this is the curve.
+       *
+       * Read off two separate renderings of a groan, and a groan is mostly noise, which is
+       * fresh every time: eight pairs measured 0.277 to 0.309 against a curve that says
+       * 0.287. So this allows a good deal more than it would like to. It is still nowhere
+       * near enough to let a straight bar through, which would come out at 0.5.
+       */
       const loud = rms(heard.groan || new Float32Array(1));
       const half = rms(heard.halfGroan || new Float32Array(1));
       const want = Math.pow(0.5, Sound.CURVE);
       const got = loud > 0 ? half / loud : 0;
       return {
-        pass: Math.abs(got - want) < 0.02,
+        pass: Math.abs(got - want) < 0.045,
         detail: 'half the bar came out at ' + got.toFixed(3) + ' of full, the curve says '
           + want.toFixed(3),
       };
@@ -2645,6 +2688,25 @@ const DrunkTests = (() => {
         detail: onPitch ? 'standing on the pitch' : (offScreen ? 'off the screen'
           : 'at ' + Math.round(ref.x) + ',' + Math.round(ref.y) + ', '
             + Math.round(P.top - b.bottom) + 'px off the near touchline'),
+      };
+    });
+    check('he is in black and white stripes, which nobody else is wearing', () => {
+      /*
+       * Read straight off the baked texture, a row at a time through the middle of him: a
+       * fill that quietly stopped being stripes would still be a circle of the right size
+       * in the right place, and nothing else would notice.
+       */
+      const rr = Renderer.REFEREE.radius;
+      const row = [];
+      for (let x = 0; x < rr * 2; x += 1) {
+        const c = window.game.textures.getPixel(x, rr, 'referee');
+        if (c && c.alpha > 0) row.push((c.red + c.green + c.blue) / 3 > 128 ? 'W' : 'B');
+      }
+      const changes = row.filter((shade, i) => i > 0 && shade !== row[i - 1]).length;
+      const white = row.filter((shade) => shade === 'W').length;
+      return {
+        pass: changes >= 4 && white > 3 && white < row.length - 3,
+        detail: row.join('') + ', ' + changes + ' changes across him',
       };
     });
     check('he keeps out of everything the HUD writes', () => {
@@ -2829,19 +2891,27 @@ const DrunkTests = (() => {
             : 'the mouth is clear',
       };
     });
-    check('the referee stands on the touchline, well clear of the mouth', () => {
-      // He is not part of the ceremony: he stands on the line and blows it. Two of them
-      // coming out at once would walk straight through him if he waited in the doorway.
+    check('the referee stands a stride off it, not in the doorway', () => {
+      /*
+       * The mouth is on the halfway line and both teams walk out through it, so he stands
+       * beside it rather than in it. Near enough to the centre line to read as standing on
+       * it, which is the point of him: a fifteenth of the pitch, on a pitch twelve times
+       * wider than he is.
+       */
+      const P = CONFIG.PITCH;
       const g = startMatch('two');
       const t = Renderer.tunnel();
       const box = t ? tunnelBox(t) : null;
       const b = boundsOf(g.referee);
-      const gap = t ? box.left - b.right : 0;
+      const offCentre = Math.abs(g.referee.x - P.centreX);
+      const gap = t ? b.left - box.right : 0;
       return {
-        pass: !!t && !overlaps(b, box, 0) && gap > CONFIG.PLAYER.radius,
+        pass: !!t && !overlaps(b, box, 0) && gap > CONFIG.PLAYER.radius
+          && offCentre < P.width / 12,
         detail: !t ? 'no tunnel on this ground'
           : overlaps(b, box, 0) ? 'stood in the mouth'
-            : Math.round(gap) + 'px along the line from it',
+            : Math.round(offCentre) + 'px off the halfway line and ' + Math.round(gap)
+              + 'px clear of the mouth',
       };
     });
     check('the teams walk out of it before the first kickoff', () => {

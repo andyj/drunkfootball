@@ -259,14 +259,19 @@ const Renderer = {
   currentStadium: null,
 
   /*
-   * The referee. Stood on the near touchline, off the pitch and off the halfway line: near
-   * enough to the middle to see both goals, far enough along that the teams walking out of
-   * the tunnel are not walking through him. He is the only figure in the ground with a job,
-   * and the only one drawn in front of the rail.
+   * The referee. On the halfway line, where he can see both goals, and a stride to one
+   * side of it, because the centre line itself is the one place on that touchline he
+   * cannot stand: the tunnel comes out there and the score is written over it.
+   *
+   * 66px is measured rather than guessed. It clears the widest score the game can put up
+   * and leaves the teams their doorway, and it is small enough against a 1120px pitch that
+   * he still reads as standing on the halfway line. The far touchline is no better: the
+   * pause button sits on the centre line down there, 168px of it.
    */
   REFEREE: {
     radius: 9,
-    alongPitch: 0.36,      // fraction of the pitch width, from the left-hand goal line
+    stripePx: 3.5,         // wide enough to read as stripes at nine pixels across
+    fromCentre: 66,        // along the line from the halfway line, clear of both
     offLine: 12,           // how far outside the touchline he stands
     blowScale: 1.35,       // the puff he gives it
     blowMs: 190,
@@ -725,18 +730,34 @@ const Renderer = {
 
     /*
      * The referee, seen from above: the same blob as a supporter, in the one kit nobody
-     * else in the ground is wearing. Yellow rather than the traditional black, because a
-     * black figure standing on a dark surround is a figure nobody can see.
+     * else in the ground is wearing. Black and white stripes, which is the referee's own,
+     * and the white in them is what keeps him visible against a dark surround where a
+     * black figure would disappear.
      */
     const rr = Renderer.REFEREE.radius;
+    const stripe = Renderer.REFEREE.stripePx;
     bake('referee', rr * 2, rr * 2, () => {
-      g.fillStyle(Renderer.THEME.lagerYellow, 1);
-      g.lineStyle(2, P.outline, 1);
+      g.fillStyle(Renderer.THEME.chalkWhite, 1);
       g.fillCircle(rr, rr, rr - 1);
-      g.strokeCircle(rr, rr, rr - 1);
-      // The band across the shirt, which is what stops him reading as a loose ball.
+
+      /*
+       * The stripes, a column at a time, each as tall as the circle is at that point. A
+       * rectangle laid across a circle has corners, and a referee with corners is a brick.
+       * Rounded about the middle so the pattern is the same either side of him, and white
+       * down the middle so the dark rim has a stripe of its own either side of it rather
+       * than a black band merging into it.
+       */
       g.fillStyle(P.outline, 1);
-      g.fillRect(2, rr - 1.5, (rr - 2) * 2, 3);
+      for (let x = 0; x < rr * 2; x += 1) {
+        const dx = x + 0.5 - rr;
+        if (Math.round(dx / stripe) % 2 !== 0) {
+          const h = Math.sqrt(Math.max(0, (rr - 1) * (rr - 1) - dx * dx));
+          if (h > 0.5) g.fillRect(x, rr - h, 1, h * 2);
+        }
+      }
+
+      g.lineStyle(2, P.outline, 1);
+      g.strokeCircle(rr, rr, rr - 1);
     });
 
     // The ring marking whoever has the ball. Baked hollow so the player still reads
@@ -1471,7 +1492,7 @@ const Renderer = {
     const P = CONFIG.PITCH;
     const R = Renderer.REFEREE;
     return {
-      x: P.left + P.width * R.alongPitch,
+      x: P.centreX + R.fromCentre,
       y: P.top - R.offLine - R.radius,
     };
   },
