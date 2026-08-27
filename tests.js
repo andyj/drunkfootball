@@ -115,6 +115,99 @@ const DrunkTests = (() => {
     }
   }
 
+  /* --------------------------------------------------------------------- sound */
+
+  /*
+   * Sound is rendered rather than played. An offline context runs exactly the graph the
+   * game would and hands back the samples, but it only ever hands them back later, and
+   * every check in here is synchronous. So the rendering happens once before the checks
+   * start and the checks read the numbers off these.
+   */
+  const heard = {};
+
+  function renderSound(name, seconds, step, make) {
+    const rate = 44100;
+    const ctx = new window.OfflineAudioContext(1, Math.ceil(rate * seconds), rate);
+    const wasStep = Sound.step;
+    Sound.step = step;
+    Sound.attach(ctx);
+    make();
+    Sound.step = wasStep;
+    return ctx.startRendering().then((buffer) => { heard[name] = buffer.getChannelData(0); });
+  }
+
+  /* Called by the page before run(), because a promise cannot be waited for inside one. */
+  function listen() {
+    if (!window.OfflineAudioContext) return Promise.resolve();
+    const loud = Sound.STEPS;
+    return Promise.all([
+      renderSound('whistle', 0.7, loud, () => Sound.whistle()),
+      renderSound('groan', 1.3, loud, () => Sound.groan(1)),
+      renderSound('cheer', 2.3, loud, () => Sound.cheer(1)),
+      renderSound('smallCheer', 2.3, loud, () => Sound.cheer(0.02)),
+      renderSound('halfGroan', 1.3, Math.round(Sound.STEPS / 2), () => Sound.groan(1)),
+      renderSound('muted', 0.7, 0, () => {
+        Sound.whistle();
+        Sound.groan(1);
+        Sound.cheer(1);
+      }),
+    ]).then(() => {
+      // Put the game back on nothing, so the first real sound builds a real context.
+      Sound.ctx = null;
+      Sound.master = null;
+      Sound.live = false;
+    });
+  }
+
+  const slice = (pcm, from, to) => pcm.subarray(
+    Math.floor(pcm.length * from), Math.floor(pcm.length * to));
+
+  function peak(pcm) {
+    let most = 0;
+    for (let i = 0; i < pcm.length; i += 1) most = Math.max(most, Math.abs(pcm[i]));
+    return most;
+  }
+
+  /*
+   * How much sound there is, rather than how loud the loudest sample happened to be. Most
+   * of what this game plays is noise, and the peak of a stretch of noise is luck: two
+   * renderings of the same groan can differ by a third at the peak and by a per cent or
+   * two across the whole of it.
+   */
+  function rms(pcm) {
+    let sum = 0;
+    for (let i = 0; i < pcm.length; i += 1) sum += pcm[i] * pcm[i];
+    return Math.sqrt(sum / pcm.length);
+  }
+
+  /*
+   * How often the waveform crosses zero, which is a poor man's pitch: no maths beyond
+   * counting sign changes, and enough to tell a band of noise sliding down from one
+   * sliding up, which is the whole difference between a groan and a cheer.
+   */
+  function crossings(pcm) {
+    let n = 0;
+    for (let i = 1; i < pcm.length; i += 1) {
+      if ((pcm[i] < 0) !== (pcm[i - 1] < 0)) n += 1;
+    }
+    return n / pcm.length;
+  }
+
+  /*
+   * The quietest reading in a stretch, rather than the average one. A cheer has applause
+   * scattered through it at random, every clap is bright, and a clap landing in the window
+   * being measured only ever pushes the count up. Taking the lowest of several windows
+   * measures the crowd underneath the applause instead of whichever burst happened to land.
+   */
+  function floorCrossings(pcm, from, to, parts) {
+    let least = Infinity;
+    const span = (to - from) / parts;
+    for (let i = 0; i < parts; i += 1) {
+      least = Math.min(least, crossings(slice(pcm, from + i * span, from + (i + 1) * span)));
+    }
+    return least;
+  }
+
   /* ------------------------------------------------------------------- checks */
 
   function runAll() {
@@ -2316,6 +2409,284 @@ const DrunkTests = (() => {
       return { pass: bound, detail: 'match knows the new key: ' + bound };
     });
 
+    group('sound');
+
+    check('the whistle makes a noise, and then stops making it', () => {
+      // Rendered through the same graph the game plays, so this is the actual sound.
+      const pcm = heard.whistle;
+      if (!pcm) return { pass: false, detail: 'nothing rendered' };
+      const blast = peak(slice(pcm, 0, 0.5));
+      const after = peak(slice(pcm, 0.75, 1));
+      return {
+        pass: blast > 0.05 && after < blast * 0.05,
+        detail: 'peaks at ' + blast.toFixed(2) + ' and is down to '
+          + after.toFixed(4) + ' by the end',
+      };
+    });
+    check('the groan slides down and the cheer slides up', () => {
+      /*
+       * The one thing that makes disappointment sound like disappointment rather than like
+       * a cheer played backwards, so it is worth checking rather than assuming. Counted as
+       * zero crossings, which rise and fall with the band the noise is filtered to, and
+       * read at the floor on the cheer so the applause scattered over it is not what is
+       * being counted.
+       */
+      const groan = heard.groan;
+      const cheer = heard.cheer;
+      if (!groan || !cheer) return { pass: false, detail: 'nothing rendered' };
+      const groanFrom = crossings(slice(groan, 0.1, 0.3));
+      const groanTo = crossings(slice(groan, 0.55, 0.75));
+      const cheerFrom = floorCrossings(cheer, 0.02, 0.12, 5);
+      const cheerTo = floorCrossings(cheer, 0.25, 0.4, 5);
+      return {
+        pass: groanTo < groanFrom && cheerTo > cheerFrom,
+        detail: 'groan ' + groanFrom.toFixed(3) + ' down to ' + groanTo.toFixed(3)
+          + ', cheer ' + cheerFrom.toFixed(3) + ' up to ' + cheerTo.toFixed(3),
+      };
+    });
+    check('muted is silence, not quiet', () => {
+      const pcm = heard.muted;
+      if (!pcm) return { pass: false, detail: 'nothing rendered' };
+      return { pass: peak(pcm) === 0, detail: 'peak ' + peak(pcm) };
+    });
+    check('the volume setting is on the way out to the speakers', () => {
+      // Half the steps is not half the loudness: the bar is curved, and this is the curve.
+      const loud = rms(heard.groan || new Float32Array(1));
+      const half = rms(heard.halfGroan || new Float32Array(1));
+      const want = Math.pow(0.5, Sound.CURVE);
+      const got = loud > 0 ? half / loud : 0;
+      return {
+        pass: Math.abs(got - want) < 0.02,
+        detail: 'half the bar came out at ' + got.toFixed(3) + ' of full, the curve says '
+          + want.toFixed(3),
+      };
+    });
+    check('a smaller ground cheers smaller', () => {
+      const full = heard.cheer;
+      const few = heard.smallCheer;
+      if (!full || !few) return { pass: false, detail: 'nothing rendered' };
+      // Where it last rises above a twentieth of its peak is where the noise has finished.
+      const endOf = (pcm) => {
+        const quiet = peak(pcm) / 20;
+        for (let i = pcm.length - 1; i > 0; i -= 1) if (Math.abs(pcm[i]) > quiet) return i;
+        return 0;
+      };
+      const rate = 44100;
+      return {
+        pass: peak(few) < peak(full) && endOf(few) < endOf(full),
+        detail: 'a full house peaks ' + peak(full).toFixed(2) + ' for '
+          + (endOf(full) / rate).toFixed(1) + 's, a dozen of them ' + peak(few).toFixed(2)
+          + ' for ' + (endOf(few) / rate).toFixed(1) + 's',
+      };
+    });
+    check('every mis-hit has a noise, and nothing else does', () => {
+      /*
+       * The crowd reacts to all of them, so an outcome added to the drunk table without a
+       * groan beside it would be met with silence, which reads as the sound being broken
+       * rather than as a gap in a table.
+       */
+      const table = CONFIG.DRUNK.TABLE.map((row) => row.key).filter((key) => key !== 'intended');
+      const noises = Object.keys(Sound.GROANS);
+      const missing = table.filter((key) => !(key in Sound.GROANS));
+      const extra = noises.filter((key) => table.indexOf(key) === -1);
+      const sizes = new Set(table.map((key) => Sound.GROANS[key])).size;
+      return {
+        pass: missing.length === 0 && extra.length === 0 && sizes > 1
+          && Sound.GROANS.fumble === 1 && Sound.GROANS.wrongFoot < Sound.GROANS.fumble,
+        detail: missing.length || extra.length
+          ? 'missing ' + missing.join(',') + ', spare ' + extra.join(',')
+          : table.length + ' mis-hits, graded into ' + sizes + ' sizes of groan',
+      };
+    });
+    check('two mistakes in a moment are one groan', () => {
+      // Possession can go twice in a second, and two crowds on top of each other is a
+      // noise rather than a crowd.
+      if (!window.OfflineAudioContext) return { pass: false, detail: 'no offline audio' };
+      const wasStep = Sound.step;
+      Sound.step = Sound.STEPS;
+      Sound.attach(new window.OfflineAudioContext(1, 44100, 44100));
+      const first = Sound.groan(1);
+      const second = Sound.groan(1);
+      Sound.step = wasStep;
+      Sound.ctx = null;
+      Sound.master = null;
+      return {
+        pass: !!first && second === null,
+        detail: first ? 'the first played and the second was dropped' : 'the first was dropped',
+      };
+    });
+    check('the volume is remembered, and rubbish in storage is not', () => {
+      const stored = window.localStorage.getItem(Sound.STORAGE_KEY);
+      const was = Sound.step;
+      Sound.setStep(3);
+      Sound.load();
+      const remembered = Sound.step;
+      window.localStorage.setItem(Sound.STORAGE_KEY, 'nine hundred');
+      Sound.load();
+      const fallback = Sound.step;
+      Sound.step = was;
+      if (stored === null) window.localStorage.removeItem(Sound.STORAGE_KEY);
+      else window.localStorage.setItem(Sound.STORAGE_KEY, stored);
+      return {
+        pass: remembered === 3 && fallback === Sound.DEFAULT_STEP,
+        detail: 'saved 3 and read back ' + remembered + ', junk read back as ' + fallback,
+      };
+    });
+    check('the bar goes all the way up and round to silence', () => {
+      const stored = window.localStorage.getItem(Sound.STORAGE_KEY);
+      const was = Sound.step;
+      Sound.setStep(Sound.STEPS - 1);
+      const up = Sound.nextStep();
+      const round = Sound.nextStep();
+      const clampHigh = Sound.setStep(99);
+      const clampLow = Sound.setStep(-5);
+      Sound.setStep(was);
+      if (stored === null) window.localStorage.removeItem(Sound.STORAGE_KEY);
+      else window.localStorage.setItem(Sound.STORAGE_KEY, stored);
+      return {
+        pass: up === Sound.STEPS && round === 0 && clampHigh === Sound.STEPS && clampLow === 0,
+        detail: 'the top is ' + up + ', one more is ' + round + ', and 99 and -5 land on '
+          + clampHigh + ' and ' + clampLow,
+      };
+    });
+    check('the bar on screen has a block for every step', () => withScene('Settings', (scene) => {
+      const blocks = scene.children.list.filter((o) => o.texture && o.texture.key === 'px'
+        && o.input && Math.abs(o.displayWidth - Renderer.VOLUME_BAR.block) < 0.6);
+      const lit = blocks.filter((b) => b.displayHeight > Renderer.VOLUME_BAR.height * 0.9).length;
+      return {
+        pass: blocks.length === Sound.STEPS && lit === Sound.step,
+        detail: blocks.length + ' blocks, ' + lit + ' lit for a setting of ' + Sound.step,
+      };
+    }));
+    check('the bar has the row to itself', () => withScene('Settings', (scene) => {
+      // It lives between the label and the blurb, which is the one place on that screen
+      // with no words in it. A wider label or an earlier blurb would sit under it.
+      const B = Renderer.VOLUME_BAR;
+      const bar = {
+        left: B.x - B.block / 2,
+        right: B.x + (Sound.STEPS - 1) * (B.block + B.gap) + B.block / 2,
+        top: -B.height / 2,
+        bottom: B.height / 2,
+      };
+      const label = scene.children.list.find((o) => o.text && /VOLUME/.test(o.text));
+      if (!label) return { pass: false, detail: 'no volume row' };
+      const onThisRow = textsOf(scene).filter((t) => Math.abs(t.y - label.y) < 14);
+      const clashes = onThisRow.filter((t) => {
+        const b = boundsOf(t);
+        return b.right > bar.left && b.left < bar.right;
+      }).map((t) => t.text);
+      return {
+        pass: clashes.length === 0 && onThisRow.length >= 2,
+        detail: clashes.join(', ') || 'clear of ' + onThisRow.length + ' pieces of text',
+      };
+    }));
+
+    group('the referee');
+
+    check('he stands off the pitch, and on the screen', () => {
+      const g = startMatch('two');
+      const ref = g.referee;
+      if (!ref) return { pass: false, detail: 'there is no referee' };
+      const b = boundsOf(ref);
+      const P = CONFIG.PITCH;
+      const onPitch = overlaps(b, { left: P.left, right: P.right, top: P.top, bottom: P.bottom }, 0);
+      const offScreen = b.left < 0 || b.top < 0
+        || b.right > CONFIG.CANVAS.width || b.bottom > CONFIG.CANVAS.height;
+      return {
+        pass: !onPitch && !offScreen,
+        detail: onPitch ? 'standing on the pitch' : (offScreen ? 'off the screen'
+          : 'at ' + Math.round(ref.x) + ',' + Math.round(ref.y) + ', '
+            + Math.round(b.top - P.bottom) + 'px past the touchline'),
+      };
+    });
+    check('he keeps out of everything the HUD writes', () => {
+      const g = startMatch('bot');
+      const clashes = textsOf(g).filter((t) => overlaps(boundsOf(g.referee), boundsOf(t), 0))
+        .map((t) => t.text);
+      return { pass: clashes.length === 0, detail: clashes.join(', ') || 'clear of the lot' };
+    });
+    check('a new match gets a new referee', () => {
+      /*
+       * Phaser hands a restarted scene the same object it gave the last one, so anything
+       * parked on a scene outlives the sprites it points at. This has bitten twice.
+       */
+      const first = startMatch('two').referee;
+      const second = startMatch('two').referee;
+      return {
+        pass: !!second && second !== first && second.active && !first.active,
+        detail: second === first ? 'the same sprite twice'
+          : 'the old one is destroyed and the new one is live',
+      };
+    });
+    check('he blows it on GO, and not on three, two or one', () => {
+      const g = startMatch('two');
+      const was = Sound.whistle;
+      let blown = 0;
+      Sound.whistle = () => { blown += 1; return null; };
+      try {
+        [3, 2, 1, 0].forEach((n) => Renderer.onKickoffCount(g, n));
+      } finally {
+        Sound.whistle = was;
+      }
+      return { pass: blown === 1, detail: blown + ' blast across the whole countdown' };
+    });
+    check('the whistle goes even with the countdown switched off', () => {
+      // That setting is about what you see. Turning the numbers off should not take the
+      // referee with them.
+      const g = startMatch('two');
+      const wasJuice = Renderer.JUICE.kickoffCountdown.on;
+      const was = Sound.whistle;
+      let blown = 0;
+      Sound.whistle = () => { blown += 1; return null; };
+      Renderer.JUICE.kickoffCountdown.on = false;
+      try {
+        Renderer.onKickoffCount(g, 0);
+      } finally {
+        Renderer.JUICE.kickoffCountdown.on = wasJuice;
+        Sound.whistle = was;
+      }
+      return { pass: blown === 1, detail: blown + ' blast with the countdown off' };
+    });
+
+    group('the settings keys');
+
+    check('every key on that screen reaches something that exists', () => {
+      /*
+       * Written the day the A key stopped working: the method behind it had been renamed
+       * and the row still worked with a click, so the setting looked fine unless you used
+       * the key it advertises. Every handler is stubbed, so this asks only the question
+       * that went wrong - does the key reach a method that is actually there.
+       */
+      onlyScene('Settings');
+      sceneByKey('Menu').scene.start('Settings', { returnTo: null });
+      step(8);
+      const scene = sceneByKey('Settings');
+      const wired = [
+        { name: 'M', code: 77, method: 'toggleMouse' },
+        { name: 'T', code: 84, method: 'cycleTouch' },
+        { name: 'A', code: 65, method: 'cycleAssist' },
+        { name: 'V', code: 86, method: 'stepVolume' },
+        { name: 'G', code: 71, method: 'cycleStadium' },
+      ];
+      const called = [];
+      wired.forEach((w) => { scene[w.method] = () => called.push(w.name); });
+      const broke = [];
+      wired.forEach((w) => {
+        try {
+          pressKey(w.code);
+        } catch (err) {
+          broke.push(w.name + ': ' + (err && err.message ? err.message : err));
+        }
+      });
+      wired.forEach((w) => { delete scene[w.method]; });
+      const missed = wired.filter((w) => called.indexOf(w.name) === -1).map((w) => w.name);
+      const trouble = broke.concat(missed.length ? ['nothing happened: ' + missed.join(',')] : []);
+      return {
+        pass: trouble.length === 0,
+        detail: trouble.join('; ') || called.join(', ') + ' all reached their setting',
+      };
+    });
+
     group('hooks');
     check('every announced event has a renderer to receive it', () => {
       const want = ['onFacingChanged', 'onOutcome', 'onGoal', 'onKickoff', 'onKickoffCount',
@@ -2516,7 +2887,7 @@ const DrunkTests = (() => {
     });
   }
 
-  return { run: runAll, stage, resume, results: () => results.slice() };
+  return { run: runAll, listen, stage, resume, results: () => results.slice() };
 })();
 
 window.DrunkTests = DrunkTests;

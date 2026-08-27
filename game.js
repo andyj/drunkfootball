@@ -660,12 +660,14 @@ class SettingsScene extends Phaser.Scene {
       mouseClicks: AIM.redUsesMouse,
       touch: AIM.touch,
       assist: AIM.assist,
+      volume: Sound.step,
       inMatch: !!this.returnTo,
     }, {
       skin: (key) => chooseSkin(this, key),
       mouse: () => this.toggleMouse(),
       touch: () => this.cycleTouch(),
       assist: () => this.cycleAssist(),
+      volume: (step) => this.setVolume(step),
       stadium: () => this.cycleStadium(),
       keys: () => this.scene.start('Keys', { returnTo: this.returnTo }),
       legacy: () => { window.location.href = LEGACY_URL; },
@@ -675,7 +677,8 @@ class SettingsScene extends Phaser.Scene {
     this.skinCount = Math.min(Renderer.SKINS.length, DIGIT_KEYS.length);
     const bindings = [];
     for (let i = 0; i < this.skinCount; i++) bindings.push(DIGIT_KEYS[i], NUMPAD_KEYS[i]);
-    this.keys = this.input.keyboard.addKeys(bindings.concat(['M', 'T', 'A', 'G', 'K', 'L']).join(','));
+    this.keys = this.input.keyboard.addKeys(
+      bindings.concat(['M', 'T', 'A', 'V', 'G', 'K', 'L']).join(','));
     this.backKey = this.input.keyboard.addKey('ESC');
   }
 
@@ -734,6 +737,20 @@ class SettingsScene extends Phaser.Scene {
     this.refresh();
   }
 
+  /*
+   * Volume, from the bar or from the key. The bar hands over the block that was clicked;
+   * the key has no block to name, so it steps up and comes round to silence off the top.
+   */
+  setVolume(step) {
+    if (step === undefined) Sound.nextStep();
+    else Sound.setStep(step);
+    this.refresh();
+  }
+
+  stepVolume() {
+    this.setVolume(undefined);
+  }
+
   /* Four answers here: random, and each of the three grounds pinned. */
   cycleStadium() {
     const list = Renderer.STADIUM_CHOICES;
@@ -758,7 +775,11 @@ class SettingsScene extends Phaser.Scene {
       return;
     }
     if (JustDown(this.keys.A)) {
-      this.toggleAssist();
+      this.cycleAssist();
+      return;
+    }
+    if (JustDown(this.keys.V)) {
+      this.stepVolume();
       return;
     }
     if (JustDown(this.keys.G)) {

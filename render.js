@@ -242,6 +242,21 @@ const Renderer = {
   /* What the match being played is actually in, rolled once when its pitch is drawn. */
   currentStadium: null,
 
+  /*
+   * The referee. Stood off the pitch on the near touchline, close enough to the halfway
+   * line to see both goals and far enough off centre to keep out of the pause hint. He is
+   * the only figure in the ground with a job, and the only one drawn in front of the rail.
+   */
+  REFEREE: {
+    radius: 9,
+    alongPitch: 0.36,      // fraction of the pitch width, from the left-hand goal line
+    offLine: 12,           // how far outside the touchline he stands
+    blowScale: 1.35,       // the puff he gives it
+    blowMs: 190,
+    flashRadius: 12,
+    flashMs: 320,
+  },
+
   CROWD: {
     fence: 0x4a5058,
     railInset: 12,          // how far outside the touchline the rail sits
@@ -630,7 +645,9 @@ const Renderer = {
    * stale textures are replaced at the top of the next scene's create, before that scene
    * has made a single sprite. Changing a skin therefore means: apply, restart, done.
    */
-  PALETTE_DEPENDENT_TEXTURES: ['player_red', 'player_blue', 'keeper_red', 'keeper_blue', 'ball'],
+  PALETTE_DEPENDENT_TEXTURES: [
+    'player_red', 'player_blue', 'keeper_red', 'keeper_blue', 'ball', 'referee',
+  ],
   paletteVersion: 0,
   bakedVersion: -1,
 
@@ -700,6 +717,22 @@ const Renderer = {
       g.lineStyle(2, P.outline, 1);
       g.fillCircle(fr, fr, fr - 1);
       g.strokeCircle(fr, fr, fr - 1);
+    });
+
+    /*
+     * The referee, seen from above: the same blob as a supporter, in the one kit nobody
+     * else in the ground is wearing. Yellow rather than the traditional black, because a
+     * black figure standing on a dark surround is a figure nobody can see.
+     */
+    const rr = Renderer.REFEREE.radius;
+    bake('referee', rr * 2, rr * 2, () => {
+      g.fillStyle(Renderer.THEME.lagerYellow, 1);
+      g.lineStyle(2, P.outline, 1);
+      g.fillCircle(rr, rr, rr - 1);
+      g.strokeCircle(rr, rr, rr - 1);
+      // The band across the shirt, which is what stops him reading as a loose ball.
+      g.fillStyle(P.outline, 1);
+      g.fillRect(2, rr - 1.5, (rr - 2) * 2, 3);
     });
 
     // The ring marking whoever has the ball. Baked hollow so the player still reads
@@ -989,6 +1022,34 @@ const Renderer = {
    */
   SETTINGS_BAND: { top: 205, height: 405 },
 
+  /*
+   * The vertical rhythm of that list, as gaps rather than as a column of hand-written y
+   * values. Adding the audio section meant every number below it moving, which is exactly
+   * the edit that puts a row through the bottom of the band: now the screen counts its own
+   * way down and the only thing to get right is how far apart things sit.
+   */
+  SETTINGS_LAYOUT: {
+    /*
+     * Measured, not guessed. A heading is drawn from its top left and stands 20px tall; a
+     * row is drawn from its middle and stands 22. So a heading needs only 18px of clearance
+     * above it and a good 32 below, which is nothing like the even spacing it looks like it
+     * wants, and is how three sections fit where two did.
+     */
+    skinTop: 250,
+    skinGap: 28,
+    headGap: 18,       // from the middle of the last row to the top of the next heading
+    firstRow: 32,      // from the top of a heading to the middle of its first row
+    rowGap: 26,
+  },
+
+  /* The volume bar: ten blocks, each one a setting you can click straight to. */
+  VOLUME_BAR: {
+    x: 496,            // clear of the widest label, and clear of the blurb column
+    block: 9,
+    gap: 3,
+    height: 15,
+  },
+
   TOUCH_BLURB: {
     auto: 'stick and buttons on a phone, keys everywhere else',
     on: 'stick and buttons always, one player only',
@@ -1199,6 +1260,19 @@ const Renderer = {
       }
     }
     g.lineBetween(x1 + dx * t0, y1 + dy * t0, x1 + dx * t1, y1 + dy * t1);
+  },
+
+  /*
+   * How loud this ground can be, from nothing to a full house, worked out from the people
+   * actually in it rather than from which ground it is. A cheer is scaled by this, so a
+   * dozen witnesses on a park pitch never sound like a terrace.
+   */
+  crowdLoudness(scene) {
+    const most = Renderer.STADIUMS.reduce((n, st) => Math.max(n, st.people[1]), 1);
+    const here = scene && scene.children
+      ? scene.children.list.filter((o) => o.texture && o.texture.key === 'fan').length
+      : 0;
+    return Math.max(0, Math.min(1, here / most));
   },
 
   /* A skin may name the only ground it is ever played in, which then settles it. */
@@ -1414,6 +1488,56 @@ const Renderer = {
     });
 
     Renderer.fillSeats(scene, S);
+    Renderer.createReferee(scene);
+  },
+
+  /*
+   * Him, on the touchline. Parked on the scene so the kickoff can find him, and every
+   * match makes a new one: Phaser hands a restarted scene the same object it gave the
+   * last one, so a referee left lying about is a reference to a destroyed sprite.
+   */
+  createReferee(scene) {
+    const P = CONFIG.PITCH;
+    const R = Renderer.REFEREE;
+    scene.referee = scene.add.image(
+      P.left + P.width * R.alongPitch,
+      P.bottom + R.offLine + R.radius,
+      'referee',
+    ).setDepth(Renderer.DEPTH.wall + 2);
+    return scene.referee;
+  },
+
+  /*
+   * One blast, on GO. The puff is the whole animation: a figure this size cannot raise an
+   * arm legibly, so he leans into it instead and the whistle is the flash of white.
+   */
+  blowWhistle(scene) {
+    Sound.whistle();
+    const ref = scene.referee;
+    if (!ref || !ref.active) return null;
+
+    const R = Renderer.REFEREE;
+    scene.tweens.add({
+      targets: ref,
+      scale: R.blowScale,
+      duration: R.blowMs,
+      yoyo: true,
+      ease: 'Quad.easeOut',
+    });
+
+    const flash = scene.add.image(ref.x, ref.y, 'px')
+      .setDisplaySize(R.flashRadius * 2, R.flashRadius * 2)
+      .setTint(Renderer.THEME.chalkWhite)
+      .setAlpha(0.7)
+      .setDepth(Renderer.DEPTH.wall + 1);
+    scene.tweens.add({
+      targets: flash,
+      alpha: 0,
+      scale: 2.4,
+      duration: R.flashMs,
+      onComplete: () => flash.destroy(),
+    });
+    return flash;
   },
 
   /*
@@ -2127,6 +2251,10 @@ const Renderer = {
   },
 
   onOutcome(scene, player, outcomeKey) {
+    // Whatever the crowd makes of it goes first: the label is switched off by a setting
+    // and being able to turn the words off should not take the noise with them.
+    Sound.groan(Sound.GROANS[outcomeKey]);
+
     const str = Renderer.phraseFor(Renderer.OUTCOME_LABELS, outcomeKey);
     if (!str) return;
 
@@ -2212,6 +2340,8 @@ const Renderer = {
   },
 
   onGoal(scene, team, scores) {
+    Sound.cheer(Renderer.crowdLoudness(scene));
+
     const J = Renderer.JUICE.goalCelebration;
     const teamColour = team === 'red' ? Renderer.THEME.redTeam : Renderer.THEME.blueTeam;
     const cx = CONFIG.CANVAS.width / 2;
@@ -2285,6 +2415,8 @@ const Renderer = {
   onKickoffCount(scene, n) {
     const J = Renderer.JUICE.kickoffCountdown;
     const isGo = n <= 0;
+    // Nothing starts until he says so, which is the one thing a referee is for.
+    if (isGo) Renderer.blowWhistle(scene);
     const label = Renderer.centredDisplay(scene, CONFIG.CANVAS.height / 2 + 120,
       isGo ? 'GO!' : String(n), J.on ? J.size : 88,
       isGo ? Renderer.CSS.accent : Renderer.CSS.hud);
@@ -2720,6 +2852,28 @@ const Renderer = {
    * Everything the skins drawer used to hold, plus the mouse setting, laid out as a column
    * rather than a panel. One list in one place beats the same list in two.
    */
+  /*
+   * Ten blocks, filled up to wherever the setting is. Every block is its own target, so
+   * the bar is a thing you set rather than a thing you step through: the key does the
+   * stepping for anybody who would rather not aim at a nine pixel square.
+   */
+  volumeBar(scene, y, step, onPick) {
+    const B = Renderer.VOLUME_BAR;
+    const blocks = [];
+    for (let i = 0; i < Sound.STEPS; i += 1) {
+      const on = i < step;
+      const block = scene.add.image(B.x + i * (B.block + B.gap), y, 'px')
+        .setDisplaySize(B.block, on ? B.height : B.height * 0.55)
+        .setTint(on ? Renderer.THEME.lagerYellow : Renderer.PALETTE.outline)
+        .setDepth(Renderer.DEPTH.overlay)
+        .setInteractive({ useHandCursor: true });
+      // Clicking the block you are already on is how you get silence out of a bar.
+      block.on('pointerdown', () => onPick(step === i + 1 ? i : i + 1));
+      blocks.push(block);
+    }
+    return blocks;
+  },
+
   createSettings(scene, state, handlers) {
     const C = Renderer.CSS;
     const cx = CONFIG.CANVAS.width / 2;
@@ -2746,8 +2900,11 @@ const Renderer = {
 
     Renderer.text(scene, nameX, 220, 'SKIN', 18, C.accent).setDepth(Renderer.DEPTH.overlay);
 
+    const L = Renderer.SETTINGS_LAYOUT;
+    // The cursor holds the last thing drawn, so everything below places itself off it.
+    let y = L.skinTop;
     Renderer.SKINS.forEach((skin, i) => {
-      const y = 258 + i * 32;
+      y = L.skinTop + i * L.skinGap;
       const current = skin.key === Renderer.activeSkin;
       if (current) {
         Renderer.text(scene, nameX - 26, y, '>', 20, C.hud)
@@ -2768,44 +2925,63 @@ const Renderer = {
       });
     });
 
-    Renderer.text(scene, nameX, 404, 'CONTROLS', 18, C.accent).setDepth(Renderer.DEPTH.overlay);
-
     /*
-     * Four rows under one heading and a fifth under another, in what is left of the band,
-     * which is why the spacing here is tighter than it looks like it wants to be. The
-     * suite checks nothing has grown past the grass it stands on.
+     * Three sections of rows in what is left of the band, which is why the spacing is
+     * tighter than it looks like it wants to be. Each heading and row takes its place from
+     * the one above rather than from a number typed here, so a section can be added
+     * without every y below it needing to be found and moved. The suite checks nothing has
+     * grown past the grass it stands on.
      */
-    const row = (y, label, blurb, onPick) => {
+    let opening = false;
+    const heading = (title) => {
+      y += L.headGap;
+      Renderer.text(scene, nameX, y, title, 18, C.accent).setDepth(Renderer.DEPTH.overlay);
+      opening = true;
+    };
+    // Blurbs sit further right than the skins' do, because these labels are a good deal
+    // wider. Returns the row's y, for anything that has to draw beside it.
+    const row = (label, blurb, onPick) => {
+      y += opening ? L.firstRow : L.rowGap;
+      opening = false;
       Renderer.optionAt(scene, nameX, y, label, 21, onPick);
       Renderer.text(scene, cx - 10, y, blurb, 14, C.dim)
         .setOrigin(0, 0.5).setDepth(Renderer.DEPTH.overlay);
+      return y;
     };
 
-    // Further right than the skin blurbs, because these labels are a good deal wider.
-    row(434, 'M   MOUSE CLICKS   ' + (state.mouseClicks ? 'ON' : 'OFF'),
+    heading('CONTROLS');
+    row('M   MOUSE CLICKS   ' + (state.mouseClicks ? 'ON' : 'OFF'),
       'left click passes, right click shoots, one player only', handlers.mouse);
-    row(464, 'T   THUMB CONTROLS   ' + state.touch.toUpperCase(),
+    row('T   THUMB CONTROLS   ' + state.touch.toUpperCase(),
       Renderer.TOUCH_BLURB[state.touch], handlers.touch);
-    row(494, 'A   AIM ASSIST   ' + state.assist.toUpperCase(),
+    row('A   AIM ASSIST   ' + state.assist.toUpperCase(),
       Renderer.ASSIST_BLURB[state.assist], handlers.assist);
 
     // The keys themselves live on a screen of their own, where they can be changed. It is
     // still a control, so it belongs here rather than under the ground it is played on.
-    row(524, 'K   CHANGE THE KEYS',
+    row('K   CHANGE THE KEYS',
       'move, pass and shoot, for both players', handlers.keys);
 
-    Renderer.text(scene, nameX, 558, 'GROUND', 18, C.accent).setDepth(Renderer.DEPTH.overlay);
+    heading('SOUND');
+    const volumeY = row('V   VOLUME',
+      state.volume > 0
+        ? 'the whistle, the crowd, and how sorry they are for you'
+        : 'muted, so nobody has to hear what you are doing',
+      () => handlers.volume());
+    Renderer.volumeBar(scene, volumeY, state.volume, handlers.volume);
+
+    heading('GROUND');
     /*
      * A skin may own the only ground it is ever played in, in which case this says so
      * rather than offering a choice that would be ignored the moment a match started.
      */
     const owned = Renderer.skinGround();
     const ground = Renderer.STADIUMS.find((st) => st.key === Renderer.stadiumChoice);
-    row(588,
-      owned ? 'G   STADIUM   ' + owned.name : 'G   STADIUM   ' + Renderer.stadiumChoice.toUpperCase(),
-      owned ? owned.blurb + ', and nothing else for this skin'
-        : (ground ? ground.blurb : 'a different ground every match'),
-      handlers.stadium);
+    row(owned ? 'G   STADIUM   ' + owned.name
+      : 'G   STADIUM   ' + Renderer.stadiumChoice.toUpperCase(),
+    owned ? owned.blurb + ', and nothing else for this skin'
+      : (ground ? ground.blurb : 'a different ground every match'),
+    handlers.stadium);
 
     // Under the settings rather than among them, because it is not one: it leaves for a
     // different build of the game entirely.
