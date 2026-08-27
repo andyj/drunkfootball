@@ -116,6 +116,41 @@ const Renderer = {
   },
 
   /*
+   * Thumb controls. Laid out in game coordinates like everything else, so they scale with
+   * the pitch rather than with the device, and drawn in the bottom corners where thumbs
+   * already are when a phone is held sideways.
+   *
+   * They have to sit over the pitch: 1280x720 is all there is, and the 60px surround is
+   * far too thin for a thumb. So they are translucent, and the ball reads straight
+   * through them. Nothing here reaches game.js, which is told only a stick direction as a
+   * fraction of full travel.
+   */
+  TOUCH: {
+    textureSize: 256,
+    ringWidth: 12,
+
+    stick: { x: 178, y: 540, baseRadius: 84, nubRadius: 38, travel: 62 },
+    /*
+     * A thumb landing anywhere in here picks the stick up and re-centres it there, because
+     * no two hands hold a phone the same way and a fixed stick suits exactly one of them.
+     * Kept well clear of the buttons and the pause pill so a pointer can never be claimed
+     * by two things at once.
+     */
+    stickZone: { left: 0, top: 280, right: 520, bottom: 720 },
+
+    buttons: [
+      { key: 'pass', x: 1010, y: 528, radius: 52, label: 'PASS', size: 19 },
+      { key: 'shoot', x: 1140, y: 592, radius: 60, label: 'SHOOT', size: 21 },
+    ],
+    /* Where the pause hint already told you to look, now something to actually press. */
+    pause: { x: 640, y: 688, width: 168, height: 46, edgeWidth: 3, label: 'PAUSE', size: 20 },
+
+    restAlpha: 0.34,
+    liveAlpha: 0.52,
+    pressMs: 140,
+  },
+
+  /*
    * Pitch decoration. None of this is read by game.js and none of it changes where the
    * ball can go, which is exactly why it lives here rather than in CONFIG.PITCH. Sizes
    * are eyeballed against the 1120x600 playing area, not scaled from real yardages.
@@ -489,6 +524,23 @@ const Renderer = {
       g.fillPath();
     });
 
+    /*
+     * The thumb controls, baked once at a size nothing asks to be drawn bigger than, so
+     * one disc and one ring serve the stick base, its nub and both buttons. White, so
+     * each use tints itself, and palette-independent, so a skin change never retires them.
+     */
+    const ts = Renderer.TOUCH.textureSize;
+    const th = ts / 2;
+    bake('touch_disc', ts, ts, () => {
+      g.fillStyle(0xffffff, 1);
+      g.fillCircle(th, th, th - 1);
+    });
+    bake('touch_ring', ts, ts, () => {
+      const lw = Renderer.TOUCH.ringWidth;
+      g.lineStyle(lw, 0xffffff, 1);
+      g.strokeCircle(th, th, th - lw / 2 - 1);
+    });
+
     const br = CONFIG.BALL.radius;
     bake('ball', br * 2, br * 2, () => {
       g.fillStyle(P.ball, 1);
@@ -708,8 +760,23 @@ const Renderer = {
     return Renderer.TEAM_NAME[team] + '   ' + Renderer.moveKeys(team) + '   ' + actions;
   },
 
+  /*
+   * The strip of grass everything on the settings screen stands on. Named because it is a
+   * container with a growing list in it, which is exactly the shape of bug this project
+   * keeps having: deep enough for five skins, two toggles and the key table, and the suite
+   * checks nothing has outgrown it.
+   */
+  SETTINGS_BAND: { top: 205, height: 405 },
+
+  TOUCH_BLURB: {
+    auto: 'stick and buttons on a phone, keys everywhere else',
+    on: 'stick and buttons always, one player only',
+    off: 'never, whatever you are playing on',
+  },
+
+  /* A thumb-controlled match has no key legend to correct. */
   updateControlHint(hud, usesMouse) {
-    hud.left.setText(Renderer.controlSummary('red', usesMouse));
+    if (hud.left) hud.left.setText(Renderer.controlSummary('red', usesMouse));
   },
 
   formatClock(seconds) {
@@ -939,31 +1006,166 @@ const Renderer = {
 
   /* ------------------------------------------------------------------ HUD */
 
-  createHUD(scene, mode, difficulty, usesMouse) {
+  createHUD(scene, state) {
     const cx = CONFIG.CANVAS.width / 2;
     const C = Renderer.CSS;
-    return {
+    const hud = {
       // Only 60px of surround above the pitch, and the display face is tall, so the two
       // are stacked tight and sized to fit rather than left where the old face sat.
       score: Renderer.display(scene, cx, 0, '0 - 0', 40).setOrigin(0.5, 0),
       timer: Renderer.display(scene, cx, 49, '0:00', 24, C.accent).setOrigin(0.5, 0),
-      left: Renderer.text(scene, 20, 12, Renderer.controlSummary('red', usesMouse), 13, C.dim),
       right: Renderer.text(scene, CONFIG.CANVAS.width - 20, 12,
-        mode === 'bot'
-          ? Renderer.TEAM_NAME.blue + '   ' + difficulty + ' bot'
+        state.mode === 'bot'
+          ? Renderer.TEAM_NAME.blue + '   ' + state.difficulty + ' bot'
           : Renderer.controlSummary('blue'), 13, C.dim)
         .setOrigin(1, 0),
-      // Only a one-player match has a mouse scheme to swap, so only it is told about M.
-      hint: Renderer.text(scene, cx, CONFIG.CANVAS.height - 24,
-        mode === 'bot'
-          ? 'P or ESC to pause    M for keys only'
-          : 'P or ESC to pause', 13, C.dim).setOrigin(0.5, 0),
     };
+
+    /*
+     * Playing with thumbs, neither of these is worth the space: a key legend names keys
+     * that are not there, and the pause hint sits exactly where the pause button goes.
+     */
+    if (!state.touch) {
+      hud.left = Renderer.text(scene, 20, 12,
+        Renderer.controlSummary('red', state.mouseClicks), 13, C.dim);
+      // Only a one-player match has a mouse scheme to swap, so only it is told about M.
+      hud.hint = Renderer.text(scene, cx, CONFIG.CANVAS.height - 24,
+        state.mode === 'bot'
+          ? 'P or ESC to pause    M for keys only'
+          : 'P or ESC to pause', 13, C.dim).setOrigin(0.5, 0);
+    }
+
+    return hud;
   },
 
   updateHUD(hud, scores, timeLeft) {
     hud.score.setText(scores.red + ' - ' + scores.blue);
     hud.timer.setText(Renderer.formatClock(timeLeft));
+  },
+
+  /*
+   * The thumb controls for a match. Like every other control scheme in the game, this one
+   * only reports: the stick says which way it is being pushed as a fraction of its own
+   * travel, the buttons say they were pressed, and the scene decides what any of it means.
+   * So a thumb ends up filling in the same six booleans a keyboard fills in.
+   */
+  createTouchControls(scene, handlers) {
+    const T = Renderer.TOUCH;
+    const S = T.stick;
+    const depth = Renderer.DEPTH.hud;
+    const chalk = Renderer.THEME.chalkWhite;
+
+    // Phaser tracks one pointer unless told otherwise, and steering while shooting needs
+    // two thumbs down at once.
+    scene.input.addPointer(2);
+
+    const disc = (x, y, radius, tint, alpha) => scene.add.image(x, y, 'touch_disc')
+      .setDisplaySize(radius * 2, radius * 2).setTint(tint).setAlpha(alpha).setDepth(depth);
+    const ring = (x, y, radius, tint, alpha) => scene.add.image(x, y, 'touch_ring')
+      .setDisplaySize(radius * 2, radius * 2).setTint(tint).setAlpha(alpha).setDepth(depth);
+
+    const base = ring(S.x, S.y, S.baseRadius, chalk, T.restAlpha);
+    const nub = disc(S.x, S.y, S.nubRadius, chalk, T.restAlpha);
+
+    let held = null;   // id of the pointer currently on the stick, if any
+
+    const place = (x, y) => { base.setPosition(x, y); nub.setPosition(x, y); };
+    const light = (on) => {
+      base.setAlpha(on ? T.liveAlpha : T.restAlpha);
+      nub.setAlpha(on ? T.liveAlpha : T.restAlpha);
+    };
+    const release = () => {
+      held = null;
+      place(S.x, S.y);
+      light(false);
+      handlers.move(0, 0);
+    };
+
+    const Z = T.stickZone;
+    const zone = scene.add.zone((Z.left + Z.right) / 2, (Z.top + Z.bottom) / 2,
+      Z.right - Z.left, Z.bottom - Z.top)
+      .setInteractive()
+      .on('pointerdown', (pointer) => {
+        if (held !== null) return;
+        held = pointer.id;
+        place(pointer.worldX, pointer.worldY);
+        light(true);
+      });
+
+    scene.input.on('pointermove', (pointer) => {
+      if (pointer.id !== held) return;
+      const dx = pointer.worldX - base.x;
+      const dy = pointer.worldY - base.y;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      if (len < 0.001) { nub.setPosition(base.x, base.y); handlers.move(0, 0); return; }
+      // Capped at the ring, so a thumb that slides off the edge keeps pushing that way
+      // rather than reporting a direction nobody can see.
+      const reach = Math.min(len, S.travel);
+      nub.setPosition(base.x + (dx / len) * reach, base.y + (dy / len) * reach);
+      handlers.move((dx / len) * (reach / S.travel), (dy / len) * (reach / S.travel));
+    });
+    scene.input.on('pointerup', (pointer) => { if (pointer.id === held) release(); });
+    scene.input.on('gameout', release);   // a thumb dragged off the canvas is a thumb lifted
+
+    const objects = [base, nub, zone];
+    const buttons = {};
+
+    T.buttons.forEach((spec) => {
+      const tint = spec.key === 'shoot' ? Renderer.THEME.lagerYellow : chalk;
+      const face = disc(spec.x, spec.y, spec.radius, tint, T.restAlpha);
+      const edge = ring(spec.x, spec.y, spec.radius, tint, T.liveAlpha);
+      const label = Renderer.text(scene, spec.x, spec.y, spec.label, spec.size,
+        spec.key === 'shoot' ? Renderer.CSS.accent : Renderer.CSS.hud)
+        .setOrigin(0.5).setDepth(depth);
+
+      // The hit area is stated in the texture's own coordinates and carried through by
+      // the display size, so the circle you can see is exactly the circle that answers.
+      const half = T.textureSize / 2;
+      face.setInteractive(new Phaser.Geom.Circle(half, half, half), Phaser.Geom.Circle.Contains)
+        .on('pointerdown', () => {
+          face.setAlpha(T.liveAlpha);
+          scene.tweens.add({ targets: face, alpha: T.restAlpha, duration: T.pressMs });
+          handlers[spec.key]();
+        });
+
+      buttons[spec.key] = face;
+      objects.push(face, edge, label);
+    });
+
+    /*
+     * The pause button sits in the surround, which is the same night black a filled pill
+     * would be, so it is drawn as an outline: an accent rectangle with the surround's own
+     * colour laid back over the middle of it.
+     */
+    const P = T.pause;
+    const edge = P.edgeWidth;
+    const pill = scene.add.image(P.x, P.y, 'px')
+      .setDisplaySize(P.width, P.height).setTint(Renderer.THEME.lagerYellow)
+      .setAlpha(0.75).setDepth(depth)
+      .setInteractive()
+      .on('pointerdown', () => handlers.pause());
+    const pillInk = scene.add.image(P.x, P.y, 'px')
+      .setDisplaySize(P.width - edge * 2, P.height - edge * 2)
+      .setTint(Renderer.THEME.nightBlack).setDepth(depth);
+    const pillLabel = Renderer.text(scene, P.x, P.y, P.label, P.size, Renderer.CSS.accent)
+      .setOrigin(0.5).setDepth(depth);
+    objects.push(pill, pillInk, pillLabel);
+
+    return { objects, zone, base, nub, buttons, pause: pill, release };
+  },
+
+  /*
+   * Taken away while the pause menu is up. Leaving a stick on screen that the match is no
+   * longer reading invites a thumb to push against nothing, and the stick has to be let
+   * go of as well, or the direction it was last pushed survives the pause. The zone stops
+   * listening too: an invisible thing that still answers to a thumb is worse than a
+   * visible one.
+   */
+  setTouchControlsVisible(view, visible) {
+    if (!view) return;
+    if (!visible) view.release();
+    view.objects.forEach((o) => o.setVisible(visible));
+    view.objects.forEach((o) => { if (o.input) o.input.enabled = visible; });
   },
 
   /* Named so the test suite can check the card really does cover every line on it. */
@@ -1532,7 +1734,7 @@ const Renderer = {
 
   /* ----------------------------------------------------------- menu scene */
 
-  createMenu(scene, onPick) {
+  createMenu(scene, onPick, touch) {
     const C = Renderer.CSS;
     const cx = CONFIG.CANVAS.width / 2;
 
@@ -1547,14 +1749,22 @@ const Renderer = {
     Renderer.centredDisplay(scene, 104, 'DRUNK FOOTBALL', 92);
     Renderer.centred(scene, 176, 'you know what you meant to do', 20, C.dim);
 
-    Renderer.keyTable(scene, cx - 250, 250, 34, cx - 20, cx + 205, 22);
+    // Naming keys to somebody holding a phone is worse than saying nothing, so the same
+    // space explains the thumb controls instead.
+    if (touch) {
+      Renderer.centred(scene, 288, 'Drag anywhere on the left to run.', 24);
+      Renderer.centred(scene, 332, 'PASS and SHOOT are under your right thumb.', 24);
+    } else {
+      Renderer.keyTable(scene, cx - 250, 250, 34, cx - 20, cx + 205, 22);
+    }
 
     Renderer.centred(scene, 420, 'Pass and Shoot only work when you have the ball.', 16, C.dim);
     Renderer.centred(scene, 446, 'Having the ball is no guarantee your legs agree.', 16, C.dim);
 
     Renderer.option(scene, 560, 'PLAY', 46, () => onPick(0));
     Renderer.option(scene, 630, 'SETTINGS', 34, () => onPick(1));
-    Renderer.centred(scene, 692, 'click either, or press 1 and 2', 15, C.dim);
+    Renderer.centred(scene, 692,
+      touch ? 'tap either' : 'click either, or press 1 and 2', 15, C.dim);
   },
 
   /* What kind of game. Everything the front screen used to offer, one step in. */
@@ -1622,11 +1832,12 @@ const Renderer = {
     const blurbX = cx - 100;
     const swatchX = cx + 300;
 
+    const band = Renderer.SETTINGS_BAND;
     scene.add.graphics()
       .fillStyle(Renderer.PALETTE.surround, 1)
       .fillRect(0, 0, CONFIG.CANVAS.width, CONFIG.CANVAS.height)
       .fillStyle(Renderer.PALETTE.grass, 1)
-      .fillRect(0, 205, CONFIG.CANVAS.width, 405);   // deep enough for five skins and the key table
+      .fillRect(0, band.top, CONFIG.CANVAS.width, band.height);
 
     Renderer.centredDisplay(scene, 110, 'SETTINGS', 72);
     /*
@@ -1662,18 +1873,24 @@ const Renderer = {
       });
     });
 
-    Renderer.text(scene, nameX, 420, 'CONTROLS', 18, C.accent).setDepth(Renderer.DEPTH.overlay);
+    Renderer.text(scene, nameX, 410, 'CONTROLS', 18, C.accent).setDepth(Renderer.DEPTH.overlay);
 
-    // Further right than the skin blurbs, because this label is a good deal wider.
-    Renderer.optionAt(scene, nameX, 458,
+    // Further right than the skin blurbs, because these labels are a good deal wider.
+    Renderer.optionAt(scene, nameX, 442,
       'M   MOUSE CLICKS   ' + (state.mouseClicks ? 'ON' : 'OFF'), 22, handlers.mouse);
-    Renderer.text(scene, cx - 10, 458,
+    Renderer.text(scene, cx - 10, 442,
       'left click passes, right click shoots, one player only', 14, C.dim)
       .setOrigin(0, 0.5).setDepth(Renderer.DEPTH.overlay);
 
+    Renderer.optionAt(scene, nameX, 474,
+      'T   THUMB CONTROLS   ' + state.touch.toUpperCase(), 22, handlers.touch);
+    Renderer.text(scene, cx - 10, 474, Renderer.TOUCH_BLURB[state.touch], 14, C.dim)
+      .setOrigin(0, 0.5).setDepth(Renderer.DEPTH.overlay);
+
     // The keys themselves, read straight out of CONFIG.CONTROLS so a remap can never
-    // leave this screen telling you something the game no longer does.
-    Renderer.keyTable(scene, nameX, 492, 28, nameX + 230, nameX + 410, 20);
+    // leave this screen telling you something the game no longer does. Four rows, and the
+    // last of them has to finish inside the green band above the legacy button.
+    Renderer.keyTable(scene, nameX, 504, 25, nameX + 230, nameX + 410, 20);
 
     // Under the settings rather than among them, because it is not one: it leaves for a
     // different build of the game entirely.
@@ -1710,6 +1927,25 @@ const Renderer = {
   },
 
   /* -------------------------------------------------------- penalty scene */
+
+  /*
+   * The numbered thirds answer to a tap as well as to their number key, which is what
+   * makes a shootout possible on a phone at all. Reported by index, so both ways in land
+   * on the same code and a taker can never pick a corner one of them cannot reach.
+   *
+   * The zones reach back off the goal line into the six-yard box rather than covering only
+   * the net, because a third of a goal mouth is a small thing to hit with a thumb.
+   */
+  makePenaltyPicksTappable(scene, geom, onPick) {
+    const reachBack = 70;
+    const width = reachBack + geom.goalDepth;
+    const height = geom.mouthHeight / CONFIG.PENALTY.thirds.length;
+    return CONFIG.PENALTY.thirds.map((third, i) =>
+      scene.add.zone(geom.goalLineX - reachBack / 2 + geom.goalDepth / 2,
+        geom.thirdY[third], width, height)
+        .setInteractive({ useHandCursor: true })
+        .on('pointerdown', () => onPick(i)));
+  },
 
   /*
    * Staged on the match pitch at blue's goal rather than on a diagram of its own, so the
@@ -1867,7 +2103,7 @@ const Renderer = {
 
   /* ------------------------------------------------------ full time scene */
 
-  createFullTime(scene, result) {
+  createFullTime(scene, result, handlers) {
     const C = Renderer.CSS;
     const winnerColour = result.winner === 'red' ? C.red : result.winner === 'blue' ? C.blue : C.hud;
 
@@ -1920,7 +2156,10 @@ const Renderer = {
         Renderer.JUICE.fullTimeConfetti.pieces, CONFIG.CANVAS.width * 0.55, 780);
     }
 
-    Renderer.centred(scene, 570, standalone ? 'SPACE  shoot again' : 'SPACE  rematch', 30, C.accent);
-    Renderer.centred(scene, 612, 'M  menu', 30, C.accent);
+    // Both answer to a tap as well as to their key, or full time is the end of the road
+    // on a device with no keyboard.
+    Renderer.option(scene, 570, standalone ? 'SPACE  shoot again' : 'SPACE  rematch', 30,
+      handlers.again);
+    Renderer.option(scene, 612, 'M  menu', 30, handlers.menu);
   },
 };

@@ -11,10 +11,51 @@
     html, body { margin: 0; padding: 0; height: 100%; background: #101319; }
     body { display: flex; align-items: center; justify-content: center; overflow: hidden; }
     canvas { display: block; }
+
+    /*
+     * A phone held upright shows a 16:9 pitch as a strip barely a finger tall, which reads
+     * as broken rather than as small. Pure CSS, so it is right before a single line of the
+     * game has run.
+     *
+     * The card is styled here and hidden here; the media query below does nothing but
+     * decide which of the two is on screen. Keeping the look outside the query is what
+     * makes it possible to look at without a phone in your hand.
+     */
+    #rotate {
+      display: none;
+      flex-direction: column; align-items: center; justify-content: center;
+      gap: 18px; text-align: center; padding: 0 32px; color: #f2f2ea;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    #rotate .shout {
+      font-family: "Bangers", system-ui, sans-serif; font-size: 44px;
+      letter-spacing: 0.04em; line-height: 1.1;
+    }
+    #rotate .phone {
+      width: 62px; height: 104px; border: 5px solid #ffd166; border-radius: 12px;
+      animation: tip 2.2s ease-in-out infinite;
+    }
+    #rotate .quiet { color: #9aa4b2; font-size: 15px; }
+
+    @keyframes tip {
+      0%, 40% { transform: rotate(0deg); }
+      60%, 100% { transform: rotate(-90deg); }
+    }
+
+    /* Coarse pointer only, so a narrow desktop window is left alone. */
+    @media (orientation: portrait) and (pointer: coarse) {
+      #game { display: none; }
+      #rotate { display: flex; }
+    }
   </style>
 </head>
 <body>
   <div id="game"></div>
+  <div id="rotate">
+    <div class="phone"></div>
+    <div class="shout">TURN YOUR PHONE SIDEWAYS</div>
+    <div class="quiet">the pitch is wider than it is tall, and so are you by now</div>
+  </div>
   <!-- Arcade-only Phaser build: everything this game uses, a fraction of the full bundle. -->
   <script src="https://cdn.jsdelivr.net/npm/phaser@4.2.1/dist/phaser-arcade-physics.min.js"></script>
   <script src="render.js"></script>

@@ -780,6 +780,337 @@ const DrunkTests = (() => {
       return { pass: kept, detail: 'returnTo is ' + sceneByKey('Settings').returnTo };
     });
 
+    group('thumb controls');
+    /*
+     * Forced on throughout: the suite runs on a desktop, which is exactly the device auto
+     * is meant to say no to, so nothing below would ever run otherwise.
+     */
+    function withTouch(mode, fn) {
+      const was = AIM.touch;
+      AIM.touch = 'on';
+      try {
+        return fn(startMatch(mode || 'bot'));
+      } finally {
+        AIM.touch = was;
+      }
+    }
+
+    /* One frame of the real input pipeline, so these read the struct the game reads. */
+    function readOnce(g) {
+      g.red.input = makeInput();
+      g.readInput(g.time.now);
+      return g.red.input;
+    }
+
+    const pressed = (input) => Object.keys(input).filter((k) => input[k]).sort().join('+') || 'none';
+
+    check('a match on a touch device gets a stick, two buttons and a pause', () => {
+      return withTouch('bot', (g) => {
+        const v = g.touchView;
+        const labels = v.objects.filter((o) => o.text).map((o) => o.text).sort().join(',');
+        return {
+          pass: !!g.touch && !!v.base && !!v.nub && !!v.buttons.pass && !!v.buttons.shoot
+            && labels === 'PASS,PAUSE,SHOOT',
+          detail: 'labels ' + labels,
+        };
+      });
+    });
+    check('switched off, a match has none of it', () => {
+      const was = AIM.touch;
+      AIM.touch = 'off';
+      const g = startMatch('bot');
+      AIM.touch = was;
+      return { pass: g.touch === null && !g.touchView, detail: 'touch is ' + g.touch };
+    });
+    check('two players never get them, however hard you ask', () => {
+      // Two thumbs on one phone is not a game, so this stays keyboard whatever the setting.
+      return withTouch('two', (g) => ({
+        pass: g.touch === null, detail: 'touch is ' + g.touch,
+      }));
+    });
+
+    check('a push on the stick sets the same booleans a key does', () => {
+      return withTouch('bot', (g) => {
+        g.touch.x = 1; g.touch.y = 0;
+        const right = pressed(readOnce(g));
+        g.touch.x = -0.7; g.touch.y = -0.7;
+        const upLeft = pressed(readOnce(g));
+        return {
+          pass: right === 'right' && upLeft === 'left+up',
+          detail: 'right gave ' + right + ', up-left gave ' + upLeft,
+        };
+      });
+    });
+    check('the stick gives eight ways, no more and no fewer', () => {
+      // The same eight the keys give. Anything finer would put a thumb on a movement path
+      // the keyboard and the bot cannot reach, and the three are deliberately identical.
+      return withTouch('bot', (g) => {
+        const seen = new Set();
+        for (let deg = 0; deg < 360; deg += 3) {
+          const rad = Phaser.Math.DegToRad(deg);
+          g.touch.x = Math.cos(rad);
+          g.touch.y = Math.sin(rad);
+          seen.add(pressed(readOnce(g)));
+        }
+        return { pass: seen.size === 8, detail: seen.size + ' distinct: ' + [...seen].join(' ') };
+      });
+    });
+    check('a thumb resting on the glass is not a direction', () => {
+      return withTouch('bot', (g) => {
+        g.touch.x = CONFIG.TOUCH.deadZone * 0.9; g.touch.y = 0;
+        const inside = pressed(readOnce(g));
+        g.touch.x = CONFIG.TOUCH.deadZone * 1.6; g.touch.y = 0;
+        const outside = pressed(readOnce(g));
+        return {
+          pass: inside === 'none' && outside === 'right',
+          detail: 'inside ' + inside + ', outside ' + outside,
+        };
+      });
+    });
+    check('a tap is worth exactly one kick', () => {
+      // The bug this guards: a held-down flag kicks again on every frame it survives.
+      return withTouch('bot', (g) => {
+        g.touch.queuedKick = 'shoot';
+        const first = readOnce(g).shoot;
+        const second = readOnce(g).shoot;
+        return { pass: first === true && second === false,
+                 detail: 'first ' + first + ', then ' + second };
+      });
+    });
+    check('the buttons report through the handlers they were given', () => {
+      return withTouch('bot', (g) => {
+        g.touchView.buttons.pass.emit('pointerdown');
+        const afterPass = g.touch.queuedKick;
+        g.touchView.buttons.shoot.emit('pointerdown');
+        const afterShoot = g.touch.queuedKick;
+        return { pass: afterPass === 'pass' && afterShoot === 'shoot',
+                 detail: afterPass + ' then ' + afterShoot };
+      });
+    });
+    check('dragging the stick reports how far it was pushed, not how many pixels', () => {
+      return withTouch('bot', (g) => {
+        const S = Renderer.TOUCH.stick;
+        const v = g.touchView;
+        // Picked up well away from where it rests: the stick is supposed to follow a thumb.
+        const grabX = 300;
+        const grabY = 600;
+        v.zone.emit('pointerdown', { id: 7, worldX: grabX, worldY: grabY });
+        const moved = Math.abs(v.base.x - grabX) < 1 && Math.abs(v.base.y - grabY) < 1;
+
+        // Pushed right by exactly half the travel, then further than the stick can go.
+        g.input.emit('pointermove', { id: 7, worldX: grabX + S.travel / 2, worldY: grabY });
+        const half = g.touch.x;
+        g.input.emit('pointermove', { id: 7, worldX: grabX + S.travel * 4, worldY: grabY });
+        const capped = g.touch.x;
+        const nubHeld = Math.abs(v.nub.x - (v.base.x + S.travel)) < 1;
+
+        g.input.emit('pointerup', { id: 7 });
+        const let_go = g.touch.x === 0 && Math.abs(v.base.x - S.x) < 1;
+
+        return {
+          pass: moved && Math.abs(half - 0.5) < 0.02 && Math.abs(capped - 1) < 0.02
+            && nubHeld && let_go,
+          detail: 'picked up ' + moved + ', half ' + half.toFixed(2) + ', capped '
+            + capped.toFixed(2) + ', nub held ' + nubHeld + ', released ' + let_go,
+        };
+      });
+    });
+    check('a second thumb cannot steal the stick', () => {
+      return withTouch('bot', (g) => {
+        const v = g.touchView;
+        v.zone.emit('pointerdown', { id: 1, worldX: 300, worldY: 600 });
+        v.zone.emit('pointerdown', { id: 2, worldX: 120, worldY: 400 });
+        const stayed = Math.abs(v.base.x - 300) < 1;
+        // The button thumb lifting must not drop the steering thumb's stick.
+        g.input.emit('pointerup', { id: 2 });
+        const held = Math.abs(v.base.x - 300) < 1;
+        g.input.emit('pointerup', { id: 1 });
+        return { pass: stayed && held, detail: 'stayed ' + stayed + ', held ' + held };
+      });
+    });
+
+    check('pausing takes the controls away and lets the stick go', () => {
+      return withTouch('bot', (g) => {
+        const v = g.touchView;
+        v.zone.emit('pointerdown', { id: 3, worldX: 300, worldY: 600 });
+        g.input.emit('pointermove', { id: 3, worldX: 400, worldY: 600 });
+        const pushing = g.touch.x > 0.5;
+
+        g.togglePause();
+        step(2);
+        const hidden = v.objects.every((o) => !o.visible);
+        const deaf = v.zone.input.enabled === false;
+        const centred = g.touch.x === 0;
+
+        g.togglePause();
+        step(2);
+        const back = v.objects.every((o) => o.visible) && v.zone.input.enabled === true;
+        return {
+          pass: pushing && hidden && deaf && centred && back,
+          detail: 'pushing ' + pushing + ', hidden ' + hidden + ', deaf ' + deaf
+            + ', centred ' + centred + ', back ' + back,
+        };
+      });
+    });
+    check('a kick tapped as the match pauses does not go off on resume', () => {
+      return withTouch('bot', (g) => {
+        g.touchView.buttons.shoot.emit('pointerdown');
+        g.togglePause();
+        step(2);
+        g.togglePause();
+        step(2);
+        const fired = readOnce(g).shoot;
+        return { pass: fired === false, detail: 'shot on resume: ' + fired };
+      });
+    });
+    check('thumbs and the click scheme are never both live', () => {
+      // Otherwise every tap on the stick is also a pass. Asked for explicitly, because an
+      // earlier check leaves the preference wherever it happened to finish.
+      const was = AIM.redUsesMouse;
+      AIM.redUsesMouse = true;
+      const out = withTouch('bot', (g) => ({
+        pass: g.redUsesMouse() === false,
+        detail: 'pref on, in use ' + g.redUsesMouse(),
+      }));
+      AIM.redUsesMouse = was;
+      return out;
+    });
+    check('the key legend and the pause hint give way to the button', () => {
+      return withTouch('bot', (g) => ({
+        pass: !g.hud.left && !g.hud.hint && !!g.hud.score && !!g.hud.right,
+        detail: 'left ' + !!g.hud.left + ', hint ' + !!g.hud.hint,
+      }));
+    });
+
+    check('nothing on the thumb layout touches anything else on it', () => {
+      const T = Renderer.TOUCH;
+      const circles = [
+        { name: 'stick', x: T.stick.x, y: T.stick.y, r: T.stick.baseRadius },
+      ].concat(T.buttons.map((b) => ({ name: b.key, x: b.x, y: b.y, r: b.radius })));
+      const clashes = [];
+      for (let i = 0; i < circles.length; i++) {
+        for (let j = i + 1; j < circles.length; j++) {
+          const a = circles[i];
+          const b = circles[j];
+          if (Math.hypot(a.x - b.x, a.y - b.y) < a.r + b.r) clashes.push(a.name + '/' + b.name);
+        }
+      }
+      // The pause pill sits in the surround under the pitch, between the two thumbs.
+      const pill = Renderer.TOUCH.pause;
+      circles.forEach((c) => {
+        const nearestX = Math.max(pill.x - pill.width / 2, Math.min(c.x, pill.x + pill.width / 2));
+        const nearestY = Math.max(pill.y - pill.height / 2, Math.min(c.y, pill.y + pill.height / 2));
+        if (Math.hypot(c.x - nearestX, c.y - nearestY) < c.r) clashes.push(c.name + '/pause');
+      });
+      return { pass: clashes.length === 0, detail: clashes.join(', ') || 'all clear' };
+    });
+    check('every thumb control is on the screen', () => {
+      const T = Renderer.TOUCH;
+      const W = CONFIG.CANVAS.width;
+      const H = CONFIG.CANVAS.height;
+      const off = [];
+      const box = (name, left, top, right, bottom) => {
+        if (left < 0 || top < 0 || right > W || bottom > H) off.push(name);
+      };
+      // The stick is checked at full travel, which is as far as it is ever drawn.
+      const S = T.stick;
+      const reach = S.baseRadius + S.travel;
+      box('stick', S.x - reach, S.y - reach, S.x + reach, S.y + reach);
+      T.buttons.forEach((b) => box(b.key, b.x - b.radius, b.y - b.radius,
+        b.x + b.radius, b.y + b.radius));
+      box('pause', T.pause.x - T.pause.width / 2, T.pause.y - T.pause.height / 2,
+        T.pause.x + T.pause.width / 2, T.pause.y + T.pause.height / 2);
+      return { pass: off.length === 0, detail: off.join(', ') || 'all on screen' };
+    });
+
+    check('the settings list has not outgrown the grass it stands on', () => {
+      // Adding a line pushed the last row of the key table onto the very edge of the band.
+      // Nothing may start on the grass and finish off it.
+      const band = Renderer.SETTINGS_BAND;
+      const bottom = band.top + band.height;
+      return withScene('Settings', (scene) => {
+        const spills = textsOf(scene)
+          .filter((t) => {
+            const b = boundsOf(t);
+            return b.top >= band.top && b.top < bottom && b.bottom > bottom;
+          })
+          .map((t) => t.text);
+        return { pass: spills.length === 0, detail: spills.join(', ') || 'all on the grass' };
+      });
+    });
+    check('the setting cycles through all three and is remembered', () => {
+      const was = AIM.touch;
+      AIM.touch = 'auto';
+      const s = sceneByKey('Settings');
+      const seen = [];
+      for (let i = 0; i < 4; i++) {
+        seen.push(AIM.touch);
+        s.cycleTouch.call({ refresh: () => {} });
+      }
+      const stored = JSON.parse(window.localStorage.getItem('drunkfootball.prefs') || '{}');
+      const remembered = stored.touch === AIM.touch;
+      AIM.touch = was;
+      savePrefs();
+      return {
+        pass: seen.join(',') === 'auto,on,off,auto' && remembered,
+        detail: seen.join(',') + ', remembered ' + remembered,
+      };
+    });
+    check('the front screen explains thumbs instead of naming keys', () => {
+      const was = AIM.touch;
+      AIM.touch = 'on';
+      onlyScene('Menu');
+      sceneByKey('Menu').scene.restart();
+      step(6);
+      const said = textsOf(sceneByKey('Menu')).map((t) => t.text).join(' | ');
+      AIM.touch = was;
+      return {
+        pass: said.indexOf('right thumb') !== -1 && said.indexOf('W A S D') === -1,
+        detail: said.slice(0, 120),
+      };
+    });
+
+    check('every penalty corner can be tapped as well as keyed', () => {
+      // Without this a shootout is unplayable on a phone: 1, 2 and 3 are the only way in.
+      onlyScene('Penalty');
+      sceneByKey('Menu').scene.start('Penalty', { mode: 'bot', standalone: true });
+      step(20);
+      const p = sceneByKey('Penalty');
+      const zones = p.children.list.filter((o) => o.type === 'Zone' && o.input);
+      if (zones.length !== CONFIG.PENALTY.thirds.length) {
+        return { pass: false, detail: zones.length + ' zones for '
+          + CONFIG.PENALTY.thirds.length + ' corners' };
+      }
+      // A tap has to travel the same road a key press does, guards included.
+      const taken = [];
+      const realTake = p.takePenalty;
+      p.takePenalty = (i) => { taken.push(i); };
+      p.phase = 'await';
+      zones.forEach((z) => z.emit('pointerdown'));
+      // And must be refused when it is not yours to take.
+      p.phase = 'kicking';
+      zones[0].emit('pointerdown');
+      p.takePenalty = realTake;
+      return {
+        pass: taken.join(',') === '0,1,2',
+        detail: 'taps produced ' + taken.join(',') || 'nothing',
+      };
+    });
+    check('full time can be left without a keyboard', () => {
+      onlyScene('FullTime');
+      sceneByKey('Menu').scene.start('FullTime', {
+        mode: 'two', scores: { red: 3, blue: 1 }, penalties: null,
+      });
+      step(14);
+      const f = sceneByKey('FullTime');
+      const pickable = textsOf(f).filter((t) => t.input
+        && (t.text.indexOf('rematch') !== -1 || t.text.indexOf('menu') !== -1));
+      return {
+        pass: pickable.length === 2,
+        detail: pickable.map((t) => t.text).join(' | ') || 'nothing pickable',
+      };
+    });
+
     group('hooks');
     check('every announced event has a renderer to receive it', () => {
       const want = ['onFacingChanged', 'onOutcome', 'onGoal', 'onKickoff', 'onKickoffCount',
@@ -883,6 +1214,24 @@ const DrunkTests = (() => {
 
     crowd() {
       return stages.match('sunday');
+    },
+
+    /* A match as a phone gets it: stick down, buttons and pause button up. */
+    touch(skin) {
+      const was = AIM.touch;
+      AIM.touch = 'on';
+      Renderer.applySkin(skin || Renderer.activeSkin);
+      const g = startMatch('bot');
+      AIM.touch = was;
+      const P = CONFIG.PITCH;
+      g.red.sprite.setPosition(P.centreX - 190, P.centreY - 40);
+      g.ball.body.setVelocity(0, 0);
+      g.ball.setPosition(P.centreX - 155, P.centreY - 40);
+      // Held mid-push, so the stick is photographed doing its job rather than at rest.
+      g.touchView.zone.emit('pointerdown', { id: 9, worldX: 300, worldY: 560 });
+      g.input.emit('pointermove', { id: 9, worldX: 360, worldY: 520 });
+      step(2);
+      return g;
     },
 
     pause() {

@@ -247,6 +247,25 @@ const CONFIG = {
     red:  { up: 'W', down: 'S', left: 'A', right: 'D', pass: 'C', shoot: 'V' },
     blue: { up: 'I', down: 'K', left: 'J', right: 'L', pass: 'MINUS', shoot: 'PLUS' },
   },
+
+  /*
+   * What a thumb on the on-screen stick means. The stick reports a direction as a fraction
+   * of its own travel and nothing else, so these are the only two numbers that decide how
+   * it plays; where it sits and how big it is are render.js's business.
+   */
+  TOUCH: {
+    // How far the thumb has to move before the stick counts as pushed at all, so resting
+    // one on the glass does not walk you into a wall.
+    deadZone: 0.22,
+    /*
+     * Eight ways, exactly what the keys give, because a diagonal is both of its neighbours
+     * held at once. This is the share of the push an axis needs before it counts, and
+     * sin(22.5 degrees) makes all eight sectors the same size. Nothing finer, deliberately:
+     * a thumb, a keyboard and the bot fill in the same six booleans and reach the same
+     * speeds, and the bot cannot be given a movement a player has no way to ask for.
+     */
+    axisShare: 0.3827,
+  },
 };
 
 /* Derived geometry, so the numbers above stay the only things worth editing. */
@@ -325,13 +344,35 @@ function updateKeeperFreeze(scene, keeper, now) {
 }
 
 /*
- * Red's mouse scheme, for one-player matches only: left click passes, right click shoots.
- * Nothing else changes, so red still faces wherever it is running and a kick goes where it
- * always did. Two humans cannot share one pointer, so a two-player match never sees any of
- * it. Kept outside the scenes so the choice survives a rematch, and M turns it off during
- * a match for anyone who would rather keep both hands on the keys.
+ * How red is driven, beyond the keys. Kept outside the scenes so a choice survives a
+ * rematch, and both of these are one-player only: two humans cannot share one pointer, and
+ * they certainly cannot share one phone.
+ *
+ * redUsesMouse is the click scheme: left click passes, right click shoots. Nothing else
+ * changes, so red still faces wherever it is running and a kick goes where it always did.
+ * M turns it off during a match for anyone who would rather keep both hands on the keys.
+ *
+ * touch is 'auto', 'on' or 'off' for the on-screen stick and buttons. Auto asks the
+ * device, which is a guess, which is why the other two exist.
  */
-const AIM = { redUsesMouse: true };
+const AIM = { redUsesMouse: true, touch: 'auto' };
+const TOUCH_MODES = ['auto', 'on', 'off'];
+
+/*
+ * A coarse pointer with no fine one anywhere is a phone or a tablet. A laptop with a
+ * touchscreen reports both, and it has a keyboard, so it is left alone.
+ */
+function deviceIsTouch() {
+  if (!window.matchMedia) return false;
+  return window.matchMedia('(pointer: coarse)').matches
+    && !window.matchMedia('(any-pointer: fine)').matches;
+}
+
+function touchWanted() {
+  if (AIM.touch === 'on') return true;
+  if (AIM.touch === 'off') return false;
+  return deviceIsTouch();
+}
 
 /*
  * Legacy mode is the game as it stood at the commit that put blue's kicks on - and =,
@@ -360,6 +401,7 @@ function loadPrefs() {
       saved = JSON.parse(raw);
     } catch (err) { saved = null; }
     if (saved && typeof saved.redUsesMouse === 'boolean') AIM.redUsesMouse = saved.redUsesMouse;
+    if (saved && TOUCH_MODES.indexOf(saved.touch) !== -1) AIM.touch = saved.touch;
   }
 }
 
@@ -367,6 +409,7 @@ function savePrefs() {
   try {
     window.localStorage.setItem(PREFS_KEY, JSON.stringify({
       redUsesMouse: AIM.redUsesMouse,
+      touch: AIM.touch,
     }));
   } catch (err) { /* nothing worth doing */ }
 }
@@ -402,7 +445,7 @@ class MenuScene extends Phaser.Scene {
 
   create() {
     Renderer.beginScene(this);
-    Renderer.createMenu(this, (index) => this.pick(index));
+    Renderer.createMenu(this, (index) => this.pick(index), touchWanted());
     this.keys = this.input.keyboard.addKeys('ONE,TWO,NUMPAD_ONE,NUMPAD_TWO');
   }
 
@@ -474,10 +517,12 @@ class SettingsScene extends Phaser.Scene {
     Renderer.beginScene(this);
     Renderer.createSettings(this, {
       mouseClicks: AIM.redUsesMouse,
+      touch: AIM.touch,
       inMatch: !!this.returnTo,
     }, {
       skin: (key) => chooseSkin(this, key),
       mouse: () => this.toggleMouse(),
+      touch: () => this.cycleTouch(),
       legacy: () => { window.location.href = LEGACY_URL; },
     });
     // One key per skin, however many there are, so the numbers on screen and the numbers
@@ -485,7 +530,7 @@ class SettingsScene extends Phaser.Scene {
     this.skinCount = Math.min(Renderer.SKINS.length, DIGIT_KEYS.length);
     const bindings = [];
     for (let i = 0; i < this.skinCount; i++) bindings.push(DIGIT_KEYS[i], NUMPAD_KEYS[i]);
-    this.keys = this.input.keyboard.addKeys(bindings.concat(['M', 'L']).join(','));
+    this.keys = this.input.keyboard.addKeys(bindings.concat(['M', 'T', 'L']).join(','));
     this.backKey = this.input.keyboard.addKey('ESC');
   }
 
@@ -513,6 +558,14 @@ class SettingsScene extends Phaser.Scene {
     this.refresh();
   }
 
+  /* Cycled rather than toggled, because there are three answers and one of them is auto. */
+  cycleTouch() {
+    const next = (TOUCH_MODES.indexOf(AIM.touch) + 1) % TOUCH_MODES.length;
+    AIM.touch = TOUCH_MODES[next];
+    savePrefs();
+    this.refresh();
+  }
+
 
   update() {
     const JustDown = Phaser.Input.Keyboard.JustDown;
@@ -523,6 +576,10 @@ class SettingsScene extends Phaser.Scene {
     }
     if (JustDown(this.keys.M)) {
       this.toggleMouse();
+      return;
+    }
+    if (JustDown(this.keys.T)) {
+      this.cycleTouch();
       return;
     }
     if (JustDown(this.keys.L)) {
@@ -694,7 +751,33 @@ class GameScene extends Phaser.Scene {
       this.queuedClick = pointer.rightButtonDown() ? 'shoot' : 'pass';
     });
 
-    this.hud = Renderer.createHUD(this, this.mode, this.difficulty, this.redUsesMouse());
+    /*
+     * Thumb controls, and only for a one-player match: two people cannot share one phone,
+     * which is the same reason the click scheme is one-player only.
+     */
+    this.touch = this.mode === 'bot' && touchWanted()
+      ? { x: 0, y: 0, queuedKick: null }
+      : null;
+
+    this.hud = Renderer.createHUD(this, {
+      mode: this.mode,
+      difficulty: this.difficulty,
+      mouseClicks: this.redUsesMouse(),
+      touch: !!this.touch,
+    });
+
+    // Cleared rather than left: Phaser reuses the same scene object for every match, so a
+    // view from the last one outlives the objects it is made of, and hiding it on the next
+    // pause would reach into things that have been destroyed.
+    this.touchView = null;
+    if (this.touch) {
+      this.touchView = Renderer.createTouchControls(this, {
+        move: (x, y) => { this.touch.x = x; this.touch.y = y; },
+        pass: () => { this.touch.queuedKick = 'pass'; },
+        shoot: () => { this.touch.queuedKick = 'shoot'; },
+        pause: () => this.togglePause(),
+      });
+    }
     this.view = {
       players: this.players,
       ball: this.ball,
@@ -861,6 +944,7 @@ class GameScene extends Phaser.Scene {
     if (this.bot) this.readBotInput(this.bot, now);
     else this.readHumanInput(this.blue);
     this.queuedClick = null;   // consumed or not, a click is worth exactly one frame
+    if (this.touch) this.touch.queuedKick = null;   // and so is a tap
   }
 
   readHumanInput(player) {
@@ -878,6 +962,30 @@ class GameScene extends Phaser.Scene {
     // A click is just another way of pressing the same button, so it fills in the same
     // struct and runs down the identical kick path, drunk roll and all.
     if (this.queuedClick && this.mouseKicker(player)) input[this.queuedClick] = true;
+
+    // And so is a thumb. Red's, and only red's.
+    if (this.touch && player === this.red) this.applyTouch(input);
+  }
+
+  /*
+   * The stick's direction, folded into the same four booleans the keys set. Written as
+   * "set true if", never as an assignment, so a thumb adds to what the keyboard is doing
+   * rather than cancelling it: anyone playing a tablet with a keyboard plugged in can use
+   * whichever is nearer.
+   */
+  applyTouch(input) {
+    const t = this.touch;
+    const T = CONFIG.TOUCH;
+    const len = Math.sqrt(t.x * t.x + t.y * t.y);
+
+    if (len > T.deadZone) {
+      if (t.x / len < -T.axisShare) input.left = true;
+      else if (t.x / len > T.axisShare) input.right = true;
+      if (t.y / len < -T.axisShare) input.up = true;
+      else if (t.y / len > T.axisShare) input.down = true;
+    }
+
+    if (t.queuedKick) input[t.queuedKick] = true;
   }
 
   /*
@@ -954,9 +1062,12 @@ class GameScene extends Phaser.Scene {
       Phaser.Math.Linear(body.velocity.y, targetY, grip));
   }
 
-  /* Switched on, and a one-player match: two humans cannot share one pointer. */
+  /*
+   * Switched on, and a one-player match: two humans cannot share one pointer. Never
+   * alongside the thumb controls either, or a tap on the stick would also be a pass.
+   */
   redUsesMouse() {
-    return AIM.redUsesMouse && this.mode === 'bot';
+    return AIM.redUsesMouse && this.mode === 'bot' && !this.touch;
   }
 
   /* Whose kicks a click counts as. Red's, and only red's. */
@@ -1340,6 +1451,11 @@ class GameScene extends Phaser.Scene {
       Renderer.hidePause(this, this.pauseView);
       this.pauseView = null;
     }
+    // The pause menu has its own resume, and a stick the match is no longer reading is
+    // only something to push against. A kick tapped in the same frame as the pause goes
+    // with it, rather than waiting to go off when play restarts.
+    Renderer.setTouchControlsVisible(this.touchView, !this.state.paused);
+    if (this.touch) this.touch.queuedKick = null;
   }
 
   /*
@@ -1393,6 +1509,11 @@ class PenaltyScene extends Phaser.Scene {
     this.pickKeys = this.input.keyboard.addKeys(
       CONFIG.PENALTY.pickKeys.concat(CONFIG.PENALTY.padKeys).join(','));
 
+    // The thirds themselves are pickable too, on every device rather than only the ones
+    // without a keyboard: aiming at the corner you want is a better way of asking than
+    // remembering which number it was.
+    Renderer.makePenaltyPicksTappable(this, this.geom, (index) => this.pick(index));
+
     this.keeper = { frozen: false, frozenUntil: 0, nextFreezeAt: 0, sprite: this.view.keeper };
     scheduleKeeperFreeze(this.keeper, this.time.now);
 
@@ -1427,6 +1548,15 @@ class PenaltyScene extends Phaser.Scene {
     this.phase = 'await';
   }
 
+  /*
+   * A corner chosen, however it was asked for. Guarded here rather than at each way in, so
+   * a tap can never take a kick the keys would have refused.
+   */
+  pick(index) {
+    if (this.phase !== 'await' || !this.isHumanTurn()) return;
+    this.takePenalty(index);
+  }
+
   update(time) {
     updateKeeperFreeze(this, this.keeper, time);
 
@@ -1436,7 +1566,7 @@ class PenaltyScene extends Phaser.Scene {
         for (let i = 0; i < CONFIG.PENALTY.pickKeys.length; i++) {
           if (JustDown(this.pickKeys[CONFIG.PENALTY.pickKeys[i]])
             || JustDown(this.pickKeys[CONFIG.PENALTY.padKeys[i]])) {
-            this.takePenalty(i);
+            this.pick(i);
             break;
           }
         }
@@ -1599,19 +1729,24 @@ class FullTimeScene extends Phaser.Scene {
     }
 
     const result = { scores: this.scores, penalties: this.penalties, winner };
-    Renderer.createFullTime(this, result);
+    Renderer.createFullTime(this, result, {
+      again: () => this.again(),
+      menu: () => this.scene.start('Menu'),
+    });
     Renderer.onFullTime(this, result);
 
     this.keys = this.input.keyboard.addKeys('SPACE,M');
   }
 
+  /* Whatever you just played is what this gives you again. */
+  again() {
+    if (this.standalone) this.scene.start('Penalty', { mode: this.mode, standalone: true });
+    else this.scene.start('Game', { mode: this.mode, difficulty: this.difficulty });
+  }
+
   update() {
     const JustDown = Phaser.Input.Keyboard.JustDown;
-    if (JustDown(this.keys.SPACE)) {
-      // Whatever you just played is what SPACE gives you again.
-      if (this.standalone) this.scene.start('Penalty', { mode: this.mode, standalone: true });
-      else this.scene.start('Game', { mode: this.mode, difficulty: this.difficulty });
-    }
+    if (JustDown(this.keys.SPACE)) this.again();
     else if (JustDown(this.keys.M)) this.scene.start('Menu');
   }
 }
