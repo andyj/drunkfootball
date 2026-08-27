@@ -513,6 +513,26 @@ const Renderer = {
     floodlights: { on: true },
   },
 
+  /*
+   * Hands. A player runs with his fists up and a keeper spreads his. The player's are two
+   * sprites carried about by him rather than part of him, because they swing when he runs;
+   * the keeper's are baked in, because his are simply held out.
+   */
+  HANDS: {
+    radius: 5,
+    spreadDeg: 66,           // out from the way he is facing
+    reach: 15,               // and how far out from the middle of him
+    pumpPx: 4,               // how far they swing, fore and aft, when he is running
+    periodMs: 300,
+    runningAbove: 12,        // px a second that counts as running rather than standing
+  },
+
+  KEEPER_ART: {
+    radius: 12,
+    handRadius: 6,
+    armWidth: 5,
+  },
+
   DEPTH: {
     pitch: 0, wall: 5, keeper: 10, player: 20, ball: 30,
     label: 40, hud: 50, overlay: 60,
@@ -729,6 +749,7 @@ const Renderer = {
    */
   PALETTE_DEPENDENT_TEXTURES: [
     'player_red', 'player_blue', 'keeper_red', 'keeper_blue', 'ball', 'referee', 'flake',
+    'hand_red', 'hand_blue',
   ],
   paletteVersion: 0,
   bakedVersion: -1,
@@ -790,6 +811,19 @@ const Renderer = {
     });
     player('player_red', P.red);
     player('player_blue', P.blue);
+
+    // A fist, in a lighter shade of the kit so it reads as a hand rather than as more
+    // player. Its own texture because what a hand does is move: these are not baked into
+    // the body, they are carried about by it.
+    const H = Renderer.HANDS;
+    const hand = (key, fill) => bake(key, H.radius * 2, H.radius * 2, () => {
+      g.fillStyle(Renderer.lighten(fill, 0.4), 1);
+      g.lineStyle(2, P.outline, 1);
+      g.fillCircle(H.radius, H.radius, H.radius - 1);
+      g.strokeCircle(H.radius, H.radius, H.radius - 1);
+    });
+    hand('hand_red', P.red);
+    hand('hand_blue', P.blue);
 
     // A supporter, seen from above: a blob. Baked white so each one can be tinted into
     // its own coat without a texture per colour.
@@ -912,14 +946,34 @@ const Renderer = {
       g.strokeCircle(br, br, br - 1);
     });
 
-    // Keeper: an upright slab on the goal line.
-    const kw = CONFIG.KEEPER.width;
+    /*
+     * Keeper: a circle with both hands spread along the goal line, which is what a keeper
+     * is doing when you look at him from above. He was a slab, and a slab is the one shape
+     * that says nothing about what it is for.
+     *
+     * The texture is a shade wider than the body the match is tuned around, so createKeeper
+     * puts the body back to the slab's own size afterwards. Four pixels of glove either
+     * side of a save is not worth re-measuring every save rate in the file for.
+     */
     const kh = CONFIG.KEEPER.height;
-    const keeper = (key, fill) => bake(key, kw, kh, () => {
+    const K = Renderer.KEEPER_ART;
+    const keeper = (key, fill) => bake(key, K.radius * 2, kh, () => {
+      const cx = K.radius;
+      const cy = kh / 2;
+      const reach = kh / 2 - K.handRadius;
+
+      // Arms first, so the body and the gloves are drawn over the ends of them.
+      g.lineStyle(K.armWidth, P.outline, 1);
+      g.lineBetween(cx, cy - reach, cx, cy + reach);
+
       g.fillStyle(fill, 1);
       g.lineStyle(3, P.outline, 1);
-      g.fillRect(1.5, 1.5, kw - 3, kh - 3);
-      g.strokeRect(1.5, 1.5, kw - 3, kh - 3);
+      g.fillCircle(cx, cy, K.radius - 2);
+      g.strokeCircle(cx, cy, K.radius - 2);
+      [-1, 1].forEach((side) => {
+        g.fillCircle(cx, cy + side * reach, K.handRadius - 1);
+        g.strokeCircle(cx, cy + side * reach, K.handRadius - 1);
+      });
     });
     keeper('keeper_red', P.keeperRed);
     keeper('keeper_blue', P.keeperBlue);
@@ -2402,7 +2456,41 @@ const Renderer = {
     sprite.setOrigin(r / sprite.width, 0.5);
     sprite.body.setCircle(r, 0, 0);
     sprite.setDepth(Renderer.DEPTH.player);
+    // Hung off the sprite, so whatever happens to him happens to them: a scene that is
+    // torn down takes both, and nothing else has to know they exist.
+    sprite.hands = [-1, 1].map((side) => {
+      const glove = scene.add
+        .image(x, y, team === 'red' ? 'hand_red' : 'hand_blue')
+        .setDepth(Renderer.DEPTH.player + 1);
+      glove.side = side;
+      return glove;
+    });
     return sprite;
+  },
+
+  /*
+   * Where a pair of hands has got to. Out to either side of the way he is facing, and
+   * swinging fore and aft while he runs, one forward as the other goes back.
+   *
+   * Read off the body's own rotation rather than off his facing, so a drunk sway takes his
+   * arms round with it instead of leaving them behind.
+   */
+  moveHands(player, time) {
+    const H = Renderer.HANDS;
+    const sprite = player.sprite;
+    if (!sprite || !sprite.hands) return;
+    const running = !!sprite.body && sprite.body.speed > H.runningAbove;
+    const phase = (time / H.periodMs) * Math.PI * 2;
+
+    sprite.hands.forEach((glove) => {
+      const out = sprite.rotation + glove.side * Phaser.Math.DegToRad(H.spreadDeg);
+      const swing = running
+        ? Math.sin(phase + (glove.side > 0 ? Math.PI : 0)) * H.pumpPx : 0;
+      glove.setPosition(
+        sprite.x + Math.cos(out) * H.reach + Math.cos(sprite.rotation) * swing,
+        sprite.y + Math.sin(out) * H.reach + Math.sin(sprite.rotation) * swing,
+      );
+    });
   },
 
   createBall(scene, x, y) {
@@ -2414,6 +2502,10 @@ const Renderer = {
 
   createKeeper(scene, x, y, team) {
     const sprite = scene.physics.add.image(x, y, team === 'red' ? 'keeper_red' : 'keeper_blue');
+    // His gloves stick out past the slab the match was tuned around, and a glove is not
+    // what stops a shot: the body stays the size every save rate in this game was measured
+    // against, whatever he is drawn as.
+    sprite.body.setSize(CONFIG.KEEPER.width, CONFIG.KEEPER.height, true);
     sprite.setDepth(Renderer.DEPTH.keeper);
     return sprite;
   },
@@ -3209,6 +3301,9 @@ const Renderer = {
         player.sprite.setRotation(player.facing + (moving ? Math.sin(phase) * amplitude : 0));
       });
     }
+
+    // After the sway, so his arms go round with him rather than a frame behind him.
+    view.players.forEach((player) => Renderer.moveHands(player, time));
 
     // Possession changes hands constantly, so the ring is moved rather than rebuilt, and
     // hidden the moment the ball is loose. A stale ring would be worse than none: it would

@@ -96,6 +96,19 @@ const CONFIG = {
     perKick: 0.3,
     spread: 0.1,            // and this much into each of the four cells around it
     dragScale: 2.2,         // how much harder fully churned ground is than fresh grass
+    /*
+     * And boots. Most of what kills a park pitch is not the kicking, it is being run over
+     * all afternoon, so every stride takes a little as well. A stride is worth a sixth of
+     * a kick and lands every 40px, which is about six a second at a run.
+     */
+    perStride: 0.05,
+    strideEvery: 40,
+    /*
+     * How much worse a patch has to get before it is drawn again. Without it, a match's
+     * worth of strides is several thousand divots: a pitch buried in mud by half time, and
+     * a few thousand strokes to draw every frame.
+     */
+    markEvery: 0.15,
   },
 
   KICK: {
@@ -1220,6 +1233,11 @@ class GameScene extends Phaser.Scene {
     const player = {
       team,
       isBot: false,
+      // How far he has run since the ground last took something from it, and where he was
+      // when it did.
+      walked: 0,
+      trodX: P.centreX,
+      trodY: P.centreY,
       facing: team === 'red' ? 0 : Math.PI,
       input: makeInput(),
       stunnedUntil: 0,
@@ -1319,9 +1337,13 @@ class GameScene extends Phaser.Scene {
   }
 
   updatePlay(time, delta) {
-    // The ball is dragged by the ground it is on rather than by the ground in general, so
-    // this is asked again every frame on a pitch that wears.
+    /*
+     * The ground first: it is worn by where everyone has just been, and the ball is dragged
+     * by the ground it is on rather than by the ground in general, so both are asked again
+     * every frame on a pitch that wears.
+     */
     if (this.wear) {
+      this.trampleGround();
       const drag = this.ballDragNow();
       this.ball.body.setDrag(drag, drag);
     }
@@ -1866,27 +1888,55 @@ class GameScene extends Phaser.Scene {
    * takes a little, which is what turns a match's worth of kicks into a worn middle rather
    * than a scatter of dots.
    */
-  tearPitch(x, y) {
+  tearPitch(x, y, much) {
     if (!this.wear) return 0;
     const cell = this.wearCell(x, y);
     if (cell === -1) return 0;
 
     const W = CONFIG.WEAR;
-    const add = (at, much) => {
+    const amount = much === undefined ? W.perKick : much;
+    // A stride throws less about than a kick does, in proportion.
+    const spread = W.spread * (amount / W.perKick);
+    const before = this.wear.level[cell];
+    const add = (at, howMuch) => {
       if (at >= 0 && at < this.wear.level.length) {
-        this.wear.level[at] = Math.min(1, this.wear.level[at] + much);
+        this.wear.level[at] = Math.min(1, this.wear.level[at] + howMuch);
       }
     };
-    add(cell, W.perKick);
+    add(cell, amount);
     // Left and right only within the same row, or a kick by the touchline wears the far one.
     const col = cell % this.wear.cols;
-    if (col > 0) add(cell - 1, W.spread);
-    if (col < this.wear.cols - 1) add(cell + 1, W.spread);
-    add(cell - this.wear.cols, W.spread);
-    add(cell + this.wear.cols, W.spread);
+    if (col > 0) add(cell - 1, spread);
+    if (col < this.wear.cols - 1) add(cell + 1, spread);
+    add(cell - this.wear.cols, spread);
+    add(cell + this.wear.cols, spread);
 
-    Renderer.onPitchWear(this, x, y, this.wear.level[cell]);
-    return this.wear.level[cell];
+    // Only drawn when the ground has visibly got worse, rather than on every stride.
+    const after = this.wear.level[cell];
+    if (Math.floor(after / W.markEvery) > Math.floor(before / W.markEvery)) {
+      Renderer.onPitchWear(this, x, y, after);
+    }
+    return after;
+  }
+
+  /*
+   * Boots on the ground, measured off where they actually ended up rather than off what
+   * was asked for: being shoved about by a collision wears the pitch the same as running
+   * does, and neither of them is in the input.
+   */
+  trampleGround() {
+    if (!this.wear) return;
+    const W = CONFIG.WEAR;
+    this.players.forEach((player) => {
+      const at = player.sprite;
+      player.walked += Phaser.Math.Distance.Between(player.trodX, player.trodY, at.x, at.y);
+      player.trodX = at.x;
+      player.trodY = at.y;
+      while (player.walked >= W.strideEvery) {
+        player.walked -= W.strideEvery;
+        this.tearPitch(at.x, at.y, W.perStride);
+      }
+    });
   }
 
   /* What the ball is rolling through, right where it is. */

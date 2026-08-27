@@ -2672,6 +2672,78 @@ const DrunkTests = (() => {
       };
     }));
 
+    group('hands');
+
+    check('a player runs with two of them, one either side', () => {
+      const g = startMatch('two');
+      const missing = g.players.filter((p) => !p.sprite.hands || p.sprite.hands.length !== 2);
+      const sides = g.red.sprite.hands.map((h) => h.side).join(',');
+      const apart = g.red.sprite.hands.length === 2
+        ? Math.round(Phaser.Math.Distance.BetweenPoints(
+          g.red.sprite.hands[0], g.red.sprite.hands[1])) : 0;
+      return {
+        pass: missing.length === 0 && sides === '-1,1' && apart > CONFIG.PLAYER.radius,
+        detail: missing.length ? missing.length + ' of them empty handed'
+          : 'sides ' + sides + ', held ' + apart + 'px apart',
+      };
+    });
+    check('they are carried about with him, and swing when he runs', () => {
+      /*
+       * The hands are their own sprites rather than part of the body, which is what lets
+       * them swing: so the thing worth checking is that they still go where he goes.
+       */
+      const g = startMatch('two');
+      const P = CONFIG.PITCH;
+      g.red.sprite.body.reset(P.centreX - 300, P.centreY + 100);
+      g.red.facing = 0;
+      step(2);
+      const near = g.red.sprite.hands.map((h) => Math.round(
+        Phaser.Math.Distance.Between(h.x, h.y, g.red.sprite.x, g.red.sprite.y)));
+      // And that they move on him while he runs, rather than being painted on: read as
+      // the offset from his middle, so his own travel is out of it.
+      const offsets = [];
+      for (let i = 0; i < 24; i += 1) {
+        g.red.sprite.body.setVelocity(CONFIG.PLAYER.speed, 0);
+        step(1);
+        offsets.push(g.red.sprite.hands[0].x - g.red.sprite.x);
+      }
+      const swing = Math.max(...offsets) - Math.min(...offsets);
+      return {
+        pass: near.every((d) => d > 0 && d < CONFIG.PLAYER.radius * 2) && swing > 1,
+        detail: 'held ' + near.join(' and ') + 'px off him, and swinging '
+          + swing.toFixed(1) + 'px fore and aft as he runs',
+      };
+    });
+    check('the keeper is a circle with a pair of them, and still blocks a slab', () => {
+      /*
+       * He is drawn wider than he blocks, on purpose: the gloves stick out past the body
+       * every save rate in this game was measured against. What must not happen is the
+       * body quietly taking the texture's size instead.
+       */
+      const g = startMatch('two');
+      const keeper = g.keepers[0].sprite;
+      const K = Renderer.KEEPER_ART;
+      const body = keeper.body;
+      return {
+        pass: body.width === CONFIG.KEEPER.width && body.height === CONFIG.KEEPER.height
+          && keeper.displayWidth === K.radius * 2,
+        detail: 'drawn ' + keeper.displayWidth + 'x' + keeper.displayHeight
+          + ', blocking ' + body.width + 'x' + body.height,
+      };
+    });
+    check('a new match gets new hands', () => {
+      // The same trap as the referee: a scene handed back by Phaser is the same object,
+      // and hands left hanging off it point at sprites that were destroyed with it.
+      const first = startMatch('two').red.sprite.hands;
+      const second = startMatch('two').red.sprite.hands;
+      return {
+        pass: !!second && second !== first && second.every((h) => h.active)
+          && first.every((h) => !h.active),
+        detail: second === first ? 'the same pair twice'
+          : 'the old pair is destroyed and the new one is live',
+      };
+    });
+
     group('the referee');
 
     check('he stands off the pitch, and on the screen', () => {
@@ -3084,6 +3156,68 @@ const DrunkTests = (() => {
         detail: !g.wear ? 'the pitch does not wear at all'
           : 'three kicks took it from ' + before.toFixed(2) + ' to ' + after.toFixed(2)
             + ', and the far corner is still ' + elsewhere.toFixed(2),
+      };
+    });
+    check('running over it wears it as well as kicking it', () => {
+      /*
+       * Most of what kills a park pitch is not the kicking, it is a whole afternoon of
+       * being run over. Measured off where he actually ends up, so being shoved about by
+       * a collision counts the same as running does.
+       */
+      const wasSkin = Renderer.activeSkin;
+      Renderer.applySkin('sunday');
+      const P = CONFIG.PITCH;
+      const g = startMatch('two');
+      const lane = P.centreY + 120;
+      g.red.sprite.body.reset(P.left + 100, lane);
+      g.red.trodX = P.left + 100;
+      g.red.trodY = lane;
+      g.setOwner(null);
+      g.state.recaptureLockUntil = g.time.now + 99999;
+      /*
+       * Driven at the body rather than through the keys: the match reads the keyboard at
+       * the top of every frame and would wipe a faked press before it ever moved him. The
+       * velocity set here is the one the next physics step uses, which is the same one a
+       * key held down would have produced.
+       */
+      for (let i = 0; i < 90; i += 1) {
+        g.red.sprite.body.setVelocity(CONFIG.PLAYER.speed, 0);
+        step(1);
+      }
+      const behind = g.wearAt(P.left + 140, lane);
+      const ahead = g.wearAt(g.red.sprite.x + 200, lane);
+      const ran = Math.round(g.red.sprite.x - (P.left + 100));
+      Renderer.applySkin(wasSkin);
+      return {
+        pass: behind > 0 && ahead === 0,
+        detail: 'ran ' + ran + 'px, leaving the ground behind him at ' + behind.toFixed(2)
+          + ' and the ground in front of him at ' + ahead.toFixed(2),
+      };
+    });
+    check('a stride costs less than a kick, and is not drawn as often', () => {
+      // A divot per stride is a pitch buried by half time and a few thousand strokes to
+      // draw every frame after it.
+      const wasSkin = Renderer.activeSkin;
+      Renderer.applySkin('sunday');
+      const P = CONFIG.PITCH;
+      const g = startMatch('two');
+      const was = Renderer.onPitchWear;
+      let drawn = 0;
+      Renderer.onPitchWear = () => { drawn += 1; };
+      let strides = 0;
+      try {
+        for (let i = 0; i < 10; i += 1) {
+          g.tearPitch(P.centreX - 200, P.centreY + 200, CONFIG.WEAR.perStride);
+          strides += 1;
+        }
+      } finally {
+        Renderer.onPitchWear = was;
+      }
+      Renderer.applySkin(wasSkin);
+      return {
+        pass: CONFIG.WEAR.perStride < CONFIG.WEAR.perKick && drawn < strides,
+        detail: strides + ' strides at ' + CONFIG.WEAR.perStride + ' each against a kick at '
+          + CONFIG.WEAR.perKick + ', and the ground was drawn again ' + drawn + ' times',
       };
     });
     check('it churns rather than digging through to Australia', () => {
