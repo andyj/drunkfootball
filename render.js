@@ -2457,32 +2457,38 @@ const Renderer = {
       });
     });
 
-    Renderer.text(scene, nameX, 410, 'CONTROLS', 18, C.accent).setDepth(Renderer.DEPTH.overlay);
+    Renderer.text(scene, nameX, 404, 'CONTROLS', 18, C.accent).setDepth(Renderer.DEPTH.overlay);
+
+    /*
+     * Four rows and a heading in each half of what is left of the band, which is why the
+     * spacing here is tighter than it looks like it wants to be. The suite checks nothing
+     * has grown past the grass it stands on.
+     */
+    const row = (y, label, blurb, onPick) => {
+      Renderer.optionAt(scene, nameX, y, label, 21, onPick);
+      Renderer.text(scene, cx - 10, y, blurb, 14, C.dim)
+        .setOrigin(0, 0.5).setDepth(Renderer.DEPTH.overlay);
+    };
 
     // Further right than the skin blurbs, because these labels are a good deal wider.
-    Renderer.optionAt(scene, nameX, 442,
-      'M   MOUSE CLICKS   ' + (state.mouseClicks ? 'ON' : 'OFF'), 22, handlers.mouse);
-    Renderer.text(scene, cx - 10, 442,
-      'left click passes, right click shoots, one player only', 14, C.dim)
-      .setOrigin(0, 0.5).setDepth(Renderer.DEPTH.overlay);
+    row(434, 'M   MOUSE CLICKS   ' + (state.mouseClicks ? 'ON' : 'OFF'),
+      'left click passes, right click shoots, one player only', handlers.mouse);
+    row(464, 'T   THUMB CONTROLS   ' + state.touch.toUpperCase(),
+      Renderer.TOUCH_BLURB[state.touch], handlers.touch);
+    row(494, 'A   AIM ASSIST   ' + (state.assist ? 'ON' : 'OFF'),
+      state.assist
+        ? 'picks the open corner, and still every bit as drunk'
+        : 'shots go down the middle and passes go where you face',
+      handlers.assist);
 
-    Renderer.optionAt(scene, nameX, 474,
-      'T   THUMB CONTROLS   ' + state.touch.toUpperCase(), 22, handlers.touch);
-    Renderer.text(scene, cx - 10, 474, Renderer.TOUCH_BLURB[state.touch], 14, C.dim)
-      .setOrigin(0, 0.5).setDepth(Renderer.DEPTH.overlay);
-
-    Renderer.text(scene, nameX, 512, 'GROUND', 18, C.accent).setDepth(Renderer.DEPTH.overlay);
+    Renderer.text(scene, nameX, 528, 'GROUND', 18, C.accent).setDepth(Renderer.DEPTH.overlay);
     const ground = Renderer.STADIUMS.find((st) => st.key === Renderer.stadiumChoice);
-    Renderer.optionAt(scene, nameX, 546,
-      'G   STADIUM   ' + Renderer.stadiumChoice.toUpperCase(), 22, handlers.stadium);
-    Renderer.text(scene, cx - 10, 546,
-      ground ? ground.blurb : 'a different ground every match', 14, C.dim)
-      .setOrigin(0, 0.5).setDepth(Renderer.DEPTH.overlay);
+    row(558, 'G   STADIUM   ' + Renderer.stadiumChoice.toUpperCase(),
+      ground ? ground.blurb : 'a different ground every match', handlers.stadium);
 
     // The keys themselves now live on a screen of their own, where they can be changed.
-    Renderer.optionAt(scene, nameX, 582, 'K   CHANGE THE KEYS', 22, handlers.keys);
-    Renderer.text(scene, cx - 10, 582, 'move, pass and shoot, for both players', 14, C.dim)
-      .setOrigin(0, 0.5).setDepth(Renderer.DEPTH.overlay);
+    row(588, 'K   CHANGE THE KEYS',
+      'move, pass and shoot, for both players', handlers.keys);
 
     // Under the settings rather than among them, because it is not one: it leaves for a
     // different build of the game entirely.

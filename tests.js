@@ -1271,6 +1271,198 @@ const DrunkTests = (() => {
       };
     });
 
+    group('aim assist');
+
+    function withAssist(on, fn) {
+      const was = AIM.assist;
+      AIM.assist = on;
+      try {
+        return fn();
+      } finally {
+        AIM.assist = was;
+      }
+    }
+
+    /*
+     * One shot, taken from a fixed spot with the roll forced to come off, so what is being
+     * measured is the aim and only the aim.
+     */
+    function shootFrom(g, player, keeperY) {
+      const P = CONFIG.PITCH;
+      player.sprite.setPosition(P.centreX, P.centreY);
+      g.ball.setPosition(P.centreX, P.centreY);
+      g.ball.body.setVelocity(0, 0);
+      g.setOwner(player);
+      const keeper = g.keepers.find((k) => k.side === (player.targetGoalX > P.centreX ? 'right' : 'left'));
+      if (keeper) keeper.sprite.setPosition(keeper.homeX, keeperY);
+      g.doKick(player, 'shoot', g.time.now);
+      const v = g.ball.body.velocity;
+      // Where the ball crosses the goal line, which is the only thing that matters.
+      const run = player.targetGoalX - P.centreX;
+      return P.centreY + (v.y / v.x) * run;
+    }
+
+    check('assisted shots go to the corner the keeper is not at', () => {
+      const g = startMatch('two');
+      const P = CONFIG.PITCH;
+      const high = [];
+      const low = [];
+      withAssist(true, () => {
+        // Keeper high, then keeper low. The aim should cross over between the two.
+        for (let i = 0; i < 12; i += 1) high.push(shootFrom(g, g.red, P.mouthTop + 10));
+        for (let i = 0; i < 12; i += 1) low.push(shootFrom(g, g.red, P.mouthBottom - 10));
+      });
+      const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+      const keeperHigh = mean(high);
+      const keeperLow = mean(low);
+      return {
+        pass: keeperHigh > P.centreY && keeperLow < P.centreY,
+        detail: 'keeper high -> aims at y' + Math.round(keeperHigh)
+          + ', keeper low -> aims at y' + Math.round(keeperLow)
+          + ' (centre ' + Math.round(P.centreY) + ')',
+      };
+    });
+    check('an assisted shot is still a shot on target', () => {
+      // A corner is no use if it is a corner of the netting rather than of the goal.
+      const g = startMatch('two');
+      const P = CONFIG.PITCH;
+      const wide = [];
+      withAssist(true, () => {
+        for (let i = 0; i < 40; i += 1) {
+          const y = shootFrom(g, g.red, i % 2 ? P.mouthTop + 10 : P.mouthBottom - 10);
+          if (y < P.mouthTop || y > P.mouthBottom) wide.push(Math.round(y));
+        }
+      });
+      return {
+        pass: wide.length === 0,
+        detail: wide.length ? 'off target at y' + wide.slice(0, 4).join(', ')
+          : '40 shots, all between the posts',
+      };
+    });
+    check('assist tightens the spread rather than removing it', () => {
+      const g = startMatch('two');
+      const P = CONFIG.PITCH;
+      const spreadOf = (on) => withAssist(on, () => {
+        const ys = [];
+        for (let i = 0; i < 40; i += 1) ys.push(shootFrom(g, g.red, P.centreY));
+        return Math.max(...ys) - Math.min(...ys);
+      });
+      const loose = spreadOf(false);
+      const tight = spreadOf(true);
+      return {
+        pass: tight < loose && tight > 0,
+        detail: 'unassisted spreads ' + Math.round(loose) + 'px, assisted '
+          + Math.round(tight) + 'px',
+      };
+    });
+    check('an assisted pass is bent towards goal, not aimed at it', () => {
+      /*
+       * The cap is the point. A pass that snapped straight at the net would stop being a
+       * pass, so it may only be turned so far and the rest of the decision stays with
+       * whoever is holding the keys.
+       */
+      const g = startMatch('two');
+      const P = CONFIG.PITCH;
+      g.red.sprite.setPosition(P.centreX, P.centreY);
+      g.ball.setPosition(P.centreX, P.centreY);
+
+      const angleAfterPass = (facing) => {
+        g.red.facing = facing;
+        g.ball.setPosition(P.centreX, P.centreY);
+        g.ball.body.setVelocity(0, 0);
+        g.setOwner(g.red);
+        g.doKick(g.red, 'pass', g.time.now);
+        return Math.atan2(g.ball.body.velocity.y, g.ball.body.velocity.x);
+      };
+
+      // Facing straight away from goal is the hardest case: a full 180 to correct.
+      const away = Math.PI;
+      const bent = withAssist(true, () => angleAfterPass(away));
+      const plain = withAssist(false, () => angleAfterPass(away));
+      const turnedDeg = Math.abs(Phaser.Math.RadToDeg(Phaser.Math.Angle.Wrap(bent - away)));
+      const cap = CONFIG.ASSIST.passBendDeg;
+
+      return {
+        pass: Math.abs(Phaser.Math.Angle.Wrap(plain - away)) < 0.01
+          && turnedDeg > 1 && turnedDeg <= cap + 0.5,
+        detail: 'turned ' + turnedDeg.toFixed(1) + ' degrees, cap is ' + cap,
+      };
+    });
+    check('assist leaves the drunk table exactly where it was', () => {
+      /*
+       * The whole bargain: it changes where the ball goes, never how often you cock it up.
+       * Measured through the real kick path, counting how many presses actually released
+       * the ball rather than whiffing, tripping or dribbling it away.
+       */
+      const runs = (on) => withAssist(on, () => {
+        const g = startMatch('two');
+        let released = 0;
+        for (let i = 0; i < 400; i += 1) {
+          const P = CONFIG.PITCH;
+          g.red.sprite.setPosition(P.centreX, P.centreY);
+          g.red.stunnedUntil = 0;
+          g.ball.setPosition(P.centreX, P.centreY);
+          g.ball.body.setVelocity(0, 0);
+          g.setOwner(g.red);
+          g.attemptKick(g.red, 'shoot', g.time.now);
+          if (g.ball.body.speed > 1) released += 1;
+        }
+        return released / 400;
+      });
+      const before = JSON.stringify(CONFIG.DRUNK.TABLE);
+      const off = runs(false);
+      const on = runs(true);
+      const after = JSON.stringify(CONFIG.DRUNK.TABLE);
+
+      /*
+       * Two ways round, because the rate alone only notices a change to whiffing and
+       * falling over: everything else on the table still releases the ball. The snapshot
+       * is what catches somebody quietly reweighting it in the name of being helpful.
+       */
+      return {
+        pass: before === after && Math.abs(on - off) < 0.09,
+        detail: (before === after ? 'table untouched, ' : 'THE TABLE CHANGED, ')
+          + 'ball left the foot ' + Math.round(off * 100) + '% of presses unassisted, '
+          + Math.round(on * 100) + '% assisted',
+      };
+    });
+    check('the bot never gets it', () => {
+      // Its aim is how a difficulty is set, so handing it this would make every bot harder.
+      return withAssist(true, () => {
+        const g = startMatch('bot');
+        return {
+          pass: g.assisted(g.blue) === false && g.assisted(g.red) === true,
+          detail: 'bot ' + g.assisted(g.blue) + ', human ' + g.assisted(g.red),
+        };
+      });
+    });
+    check('both players get it in a two player match', () => {
+      return withAssist(true, () => {
+        const g = startMatch('two');
+        return {
+          pass: g.assisted(g.red) === true && g.assisted(g.blue) === true,
+          detail: 'red ' + g.assisted(g.red) + ', blue ' + g.assisted(g.blue),
+        };
+      });
+    });
+    check('switched off, nobody gets it', () => {
+      return withAssist(false, () => {
+        const g = startMatch('two');
+        return { pass: !g.assisted(g.red) && !g.assisted(g.blue), detail: 'off for both' };
+      });
+    });
+    check('the setting is remembered', () => {
+      const stored = window.localStorage.getItem('drunkfootball.prefs');
+      const was = AIM.assist;
+      AIM.assist = !was;
+      savePrefs();
+      const saved = JSON.parse(window.localStorage.getItem('drunkfootball.prefs') || '{}');
+      AIM.assist = was;
+      if (stored === null) window.localStorage.removeItem('drunkfootball.prefs');
+      else window.localStorage.setItem('drunkfootball.prefs', stored);
+      return { pass: saved.assist === !was, detail: 'stored as ' + saved.assist };
+    });
+
     group('the stands');
 
     const fansIn = (scene) => scene.children.list.filter((o) => o.texture

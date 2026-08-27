@@ -84,6 +84,20 @@ const CONFIG = {
     sliceMaxPower: 820,
   },
 
+  /*
+   * Aim assist. It assists the aim and nothing else: the drunk table below is untouched,
+   * so an assisted player whiffs, backheels and falls over exactly as often as anybody
+   * else. All it changes is where the ball goes on the presses that do come off.
+   *
+   * Never for the bot. It has its own aimWobbleDeg, which is how a difficulty is set, and
+   * handing it this as well would quietly make every bot harder.
+   */
+  ASSIST: {
+    shootSpreadDeg: 2,      // against 7 unassisted
+    cornerInsetPx: 26,      // how far inside the post to aim, so a corner is still on target
+    passBendDeg: 40,        // the most a pass may be turned goalwards from where you face
+  },
+
   /* The whole point of the game. Every Pass/Shoot press rolls against this once. */
   DRUNK: {
     stumbleMs: 300,
@@ -430,7 +444,7 @@ function updateKeeperFreeze(scene, keeper, now) {
  * touch is 'auto', 'on' or 'off' for the on-screen stick and buttons. Auto asks the
  * device, which is a guess, which is why the other two exist.
  */
-const AIM = { redUsesMouse: true, touch: 'auto' };
+const AIM = { redUsesMouse: true, touch: 'auto', assist: false };
 const TOUCH_MODES = ['auto', 'on', 'off'];
 
 /*
@@ -477,6 +491,7 @@ function loadPrefs() {
     } catch (err) { saved = null; }
     if (saved && typeof saved.redUsesMouse === 'boolean') AIM.redUsesMouse = saved.redUsesMouse;
     if (saved && TOUCH_MODES.indexOf(saved.touch) !== -1) AIM.touch = saved.touch;
+    if (saved && typeof saved.assist === 'boolean') AIM.assist = saved.assist;
     if (saved && saved.controls) applySavedControls(saved.controls);
   }
 }
@@ -503,6 +518,7 @@ function savePrefs() {
     window.localStorage.setItem(PREFS_KEY, JSON.stringify({
       redUsesMouse: AIM.redUsesMouse,
       touch: AIM.touch,
+      assist: AIM.assist,
       controls: CONFIG.CONTROLS,
     }));
   } catch (err) { /* nothing worth doing */ }
@@ -612,11 +628,13 @@ class SettingsScene extends Phaser.Scene {
     Renderer.createSettings(this, {
       mouseClicks: AIM.redUsesMouse,
       touch: AIM.touch,
+      assist: AIM.assist,
       inMatch: !!this.returnTo,
     }, {
       skin: (key) => chooseSkin(this, key),
       mouse: () => this.toggleMouse(),
       touch: () => this.cycleTouch(),
+      assist: () => this.toggleAssist(),
       stadium: () => this.cycleStadium(),
       keys: () => this.scene.start('Keys', { returnTo: this.returnTo }),
       legacy: () => { window.location.href = LEGACY_URL; },
@@ -626,7 +644,7 @@ class SettingsScene extends Phaser.Scene {
     this.skinCount = Math.min(Renderer.SKINS.length, DIGIT_KEYS.length);
     const bindings = [];
     for (let i = 0; i < this.skinCount; i++) bindings.push(DIGIT_KEYS[i], NUMPAD_KEYS[i]);
-    this.keys = this.input.keyboard.addKeys(bindings.concat(['M', 'T', 'G', 'K', 'L']).join(','));
+    this.keys = this.input.keyboard.addKeys(bindings.concat(['M', 'T', 'A', 'G', 'K', 'L']).join(','));
     this.backKey = this.input.keyboard.addKey('ESC');
   }
 
@@ -677,6 +695,12 @@ class SettingsScene extends Phaser.Scene {
     window.location.reload();
   }
 
+  toggleAssist() {
+    AIM.assist = !AIM.assist;
+    savePrefs();
+    this.refresh();
+  }
+
   /* Four answers here: random, and each of the three grounds pinned. */
   cycleStadium() {
     const list = Renderer.STADIUM_CHOICES;
@@ -698,6 +722,10 @@ class SettingsScene extends Phaser.Scene {
     }
     if (JustDown(this.keys.T)) {
       this.cycleTouch();
+      return;
+    }
+    if (JustDown(this.keys.A)) {
+      this.toggleAssist();
       return;
     }
     if (JustDown(this.keys.G)) {
@@ -1594,18 +1622,54 @@ class GameScene extends Phaser.Scene {
     if (outcome !== 'intended') Renderer.onOutcome(this, player, outcome);
   }
 
+  /* Switched on, and not a bot: a bot's aim is how its difficulty is set. */
+  assisted(player) {
+    return AIM.assist && !player.isBot;
+  }
+
+  /*
+   * Where an assisted shot goes: the corner of the goal the keeper is furthest from,
+   * inset from the post so a corner is still a shot on target rather than a shot wide.
+   * With no keeper on the pitch there is no open corner, so the middle will do.
+   */
+  openCorner(player) {
+    const P = CONFIG.PITCH;
+    const inset = CONFIG.ASSIST.cornerInsetPx;
+    const top = P.mouthTop + inset;
+    const bottom = P.mouthBottom - inset;
+    const side = player.targetGoalX > P.centreX ? 'right' : 'left';
+    const keeper = this.keepers.find((k) => k.side === side);
+    if (!keeper) return P.centreY;
+    return Math.abs(keeper.sprite.y - top) > Math.abs(keeper.sprite.y - bottom) ? top : bottom;
+  }
+
+  /*
+   * Turned towards goal, but only so far. A pass that snapped straight at the net would
+   * stop being a pass, so this bends it by at most passBendDeg and leaves the rest of the
+   * decision where it was, with whoever is holding the keys.
+   */
+  bendGoalwards(player, facing) {
+    const want = Phaser.Math.Angle.Between(
+      this.ball.x, this.ball.y, player.targetGoalX, CONFIG.PITCH.centreY);
+    const most = Phaser.Math.DegToRad(CONFIG.ASSIST.passBendDeg);
+    const off = Phaser.Math.Angle.Wrap(want - facing);
+    return facing + Phaser.Math.Clamp(off, -most, most);
+  }
+
   doKick(player, kind, now) {
     const wobble = player.isBot ? this.botCfg.aimWobbleDeg : 0;
+    const assisted = this.assisted(player);
 
     if (kind === 'pass') {
-      const angle = player.facing + Phaser.Math.DegToRad(Phaser.Math.FloatBetween(-wobble, wobble));
+      const aimed = assisted ? this.bendGoalwards(player, player.facing) : player.facing;
+      const angle = aimed + Phaser.Math.DegToRad(Phaser.Math.FloatBetween(-wobble, wobble));
       this.releaseBall(player, angle, CONFIG.KICK.passPower, now, 'pass');
       return;
     }
 
-    const spread = CONFIG.KICK.shootSpreadDeg + wobble;
-    const base = Phaser.Math.Angle.Between(
-      this.ball.x, this.ball.y, player.targetGoalX, CONFIG.PITCH.centreY);
+    const spread = (assisted ? CONFIG.ASSIST.shootSpreadDeg : CONFIG.KICK.shootSpreadDeg) + wobble;
+    const aimY = assisted ? this.openCorner(player) : CONFIG.PITCH.centreY;
+    const base = Phaser.Math.Angle.Between(this.ball.x, this.ball.y, player.targetGoalX, aimY);
     const angle = base + Phaser.Math.DegToRad(Phaser.Math.FloatBetween(-spread, spread));
     this.releaseBall(player, angle, CONFIG.KICK.shootPower, now, 'shoot');
   }
