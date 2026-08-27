@@ -354,13 +354,23 @@ function savePrefs() {
 }
 
 /*
+ * Phaser names number keys rather than taking the character, so binding "the nth item in
+ * a list" needs a lookup. Indexed rather than hardcoded, so a list that grows keeps
+ * working: the settings screen used to bind three keys and special-case a fourth, which
+ * is precisely why a fifth skin could be shown but not chosen.
+ */
+const DIGIT_KEYS = ['ONE', 'TWO', 'THREE', 'FOUR', 'FIVE', 'SIX', 'SEVEN', 'EIGHT', 'NINE'];
+const NUMPAD_KEYS = DIGIT_KEYS.map((name) => 'NUMPAD_' + name);
+
+/*
  * Shared by every menu screen. A new palette means the baked sprites are the wrong
  * colours and the drawn pitch is stale, so the honest fix is to rebuild both and redraw
  * the screen you are standing on.
  */
 function chooseSkin(scene, key) {
   Renderer.applySkin(key);
-  Renderer.rebakeTextures(scene);
+  // The restart is what repaints: the new scene rebakes the stale textures before it has
+  // drawn anything, which is the only moment it is safe to throw the old ones away.
   scene.scene.restart();
 }
 
@@ -372,7 +382,7 @@ class MenuScene extends Phaser.Scene {
   constructor() { super('Menu'); }
 
   create() {
-    Renderer.makeTextures(this);
+    Renderer.beginScene(this);
     Renderer.createMenu(this, (index) => this.pick(index));
     this.keys = this.input.keyboard.addKeys('ONE,TWO,NUMPAD_ONE,NUMPAD_TWO');
   }
@@ -398,7 +408,7 @@ class PlayScene extends Phaser.Scene {
   constructor() { super('Play'); }
 
   create() {
-    Renderer.makeTextures(this);
+    Renderer.beginScene(this);
     Renderer.createPlay(this, (index) => this.pick(index));
     this.keys = this.input.keyboard.addKeys(
       'ONE,TWO,THREE,NUMPAD_ONE,NUMPAD_TWO,NUMPAD_THREE');
@@ -429,14 +439,18 @@ class SettingsScene extends Phaser.Scene {
   constructor() { super('Settings'); }
 
   create() {
-    Renderer.makeTextures(this);
+    Renderer.beginScene(this);
     Renderer.createSettings(this, { mouseClicks: AIM.redUsesMouse }, {
       skin: (key) => chooseSkin(this, key),
       mouse: () => this.toggleMouse(),
       legacy: () => { window.location.href = LEGACY_URL; },
     });
-    this.keys = this.input.keyboard.addKeys(
-      CONFIG.BOT.pickKeys.concat(CONFIG.BOT.padKeys).join(',') + ',FOUR,NUMPAD_FOUR,M,L');
+    // One key per skin, however many there are, so the numbers on screen and the numbers
+    // that work can never disagree again.
+    this.skinCount = Math.min(Renderer.SKINS.length, DIGIT_KEYS.length);
+    const bindings = [];
+    for (let i = 0; i < this.skinCount; i++) bindings.push(DIGIT_KEYS[i], NUMPAD_KEYS[i]);
+    this.keys = this.input.keyboard.addKeys(bindings.concat(['M', 'L']).join(','));
     this.backKey = this.input.keyboard.addKey('ESC');
   }
 
@@ -463,16 +477,12 @@ class SettingsScene extends Phaser.Scene {
       return;
     }
 
-    // 1 to 3 pick a skin, 4 is the fourth skin, and the mouse toggle answers to M.
-    for (let i = 0; i < CONFIG.BOT.pickKeys.length; i++) {
-      if (JustDown(this.keys[CONFIG.BOT.pickKeys[i]])
-        || JustDown(this.keys[CONFIG.BOT.padKeys[i]])) {
+    // The number beside a skin picks it, from either the row or the numpad.
+    for (let i = 0; i < this.skinCount; i++) {
+      if (JustDown(this.keys[DIGIT_KEYS[i]]) || JustDown(this.keys[NUMPAD_KEYS[i]])) {
         chooseSkin(this, Renderer.SKINS[i].key);
         return;
       }
-    }
-    if (JustDown(this.keys.FOUR) || JustDown(this.keys.NUMPAD_FOUR)) {
-      chooseSkin(this, Renderer.SKINS[3].key);
     }
   }
 }
@@ -485,7 +495,7 @@ class PenaltyModeScene extends Phaser.Scene {
   constructor() { super('PenaltyMode'); }
 
   create() {
-    Renderer.makeTextures(this);
+    Renderer.beginScene(this);
     Renderer.createPenaltyMode(this, (index) => this.pick(index));
     this.keys = this.input.keyboard.addKeys('ONE,TWO,NUMPAD_ONE,NUMPAD_TWO');
     this.backKey = this.input.keyboard.addKey('ESC');
@@ -513,7 +523,7 @@ class DifficultyScene extends Phaser.Scene {
   constructor() { super('Difficulty'); }
 
   create() {
-    Renderer.makeTextures(this);
+    Renderer.beginScene(this);
     Renderer.createDifficulty(this, (index) => this.pick(index));
 
     // Same 1/2/3 shape as the penalty picker, numpad equivalents accepted.
@@ -568,7 +578,7 @@ class GameScene extends Phaser.Scene {
   create() {
     const P = CONFIG.PITCH;
 
-    Renderer.makeTextures(this);
+    Renderer.beginScene(this);
     Renderer.createPitch(this);
 
     this.physics.world.setBounds(0, 0, CONFIG.CANVAS.width, CONFIG.CANVAS.height);
@@ -1268,7 +1278,7 @@ class PenaltyScene extends Phaser.Scene {
   }
 
   create() {
-    Renderer.makeTextures(this);
+    Renderer.beginScene(this);
     this.geom = CONFIG.PENALTY.GEOM;
     this.view = Renderer.createPenaltyView(this, this.geom);
 
@@ -1473,7 +1483,7 @@ class FullTimeScene extends Phaser.Scene {
   }
 
   create() {
-    Renderer.makeTextures(this);
+    Renderer.beginScene(this);
 
     let winner = null;
     if (this.penalties) {
@@ -1506,12 +1516,36 @@ class FullTimeScene extends Phaser.Scene {
 Renderer.loadSkin();
 loadPrefs();
 
+/*
+ * Phaser measures text the moment it is created, so a scene built before the display face
+ * arrives is laid out for the fallback and never corrects itself. Wait for the font, but
+ * never on it: offline, or with the font blocked, the race gives up and the game starts in
+ * the system stack looking plainer and playing identically.
+ */
+function whenFontReady() {
+  if (!document.fonts || !document.fonts.load) return Promise.resolve();
+  const wait = Promise.all([
+    document.fonts.load('16px "Bangers"'),
+    document.fonts.ready,
+  ]).catch(() => {});
+  const giveUp = new Promise((resolve) => window.setTimeout(resolve, 1500));
+  return Promise.race([wait, giveUp]);
+}
+
+function boot() {
+/*
+ * The canvas is built at a multiple of the game's own size and every camera zooms to
+ * match, so the picture is drawn near the display's real resolution while game
+ * coordinates stay 1280x720 throughout.
+ */
+const renderScale = Renderer.chooseRenderScale();
+
 /* Exposed so the game can be inspected from the console during development. */
 window.game = new Phaser.Game({
   type: Phaser.AUTO,
   parent: 'game',
-  width: CONFIG.CANVAS.width,
-  height: CONFIG.CANVAS.height,
+  width: CONFIG.CANVAS.width * renderScale,
+  height: CONFIG.CANVAS.height * renderScale,
   backgroundColor: Renderer.canvasBackground(),
   scale: {
     mode: Phaser.Scale.FIT,
@@ -1524,3 +1558,6 @@ window.game = new Phaser.Game({
   scene: [MenuScene, PlayScene, SettingsScene, DifficultyScene, PenaltyModeScene,
     GameScene, PenaltyScene, FullTimeScene],
 });
+}
+
+whenFontReady().then(boot);

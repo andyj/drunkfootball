@@ -24,19 +24,55 @@ const Renderer = {
 
   /* ---------------------------------------------------------------- palette */
 
+  /*
+   * Every colour in the game comes from seven named values. A skin supplies those seven
+   * and nothing else, so a new one cannot forget a shade or invent an eighth, and every
+   * derived tone moves with it: keeper kits lighten from the team colours, the net from
+   * the black, the dim HUD grey from the white.
+   *
+   * THEME is whichever seven are currently in play. PALETTE below is what the drawing
+   * code actually reads, filled in by applySkin, so no draw call needs to know a skin
+   * exists at all.
+   */
+  THEME: {
+    pitchGreen: 0x2f8f46,
+    stripe: 0x28803c,
+    chalkWhite: 0xf5f2e6,
+    redTeam: 0xe5383b,
+    blueTeam: 0x3a86ff,
+    lagerYellow: 0xffc53d,
+    nightBlack: 0x12161c,
+  },
+
+  /* 0 keeps a, 1 gives b, so lighten is a mix towards white and darken towards black. */
+  mix(a, b, t) {
+    const ch = (shift) => {
+      const from = (a >> shift) & 0xff;
+      const to = (b >> shift) & 0xff;
+      return Math.round(from + (to - from) * t) << shift;
+    };
+    return ch(16) | ch(8) | ch(0);
+  },
+
+  lighten(colour, t) { return Renderer.mix(colour, 0xffffff, t); },
+  darken(colour, t) { return Renderer.mix(colour, 0x000000, t); },
+  hex(colour) { return '#' + colour.toString(16).padStart(6, '0'); },
+
+  /* Derived from THEME by applySkin. The literals are the default theme's, so nothing is
+   * undefined if a draw call somehow beats the first applySkin. */
   PALETTE: {
-    surround: 0x101319,
-    grass: 0x2f7d40,
-    grassAlt: 0x35894a,     // the lighter mown band, a shade up from grass
-    line: 0xf2f2ea,
-    net: 0x1d2430,
-    red: 0xe04b4b,
-    blue: 0x4b7fe0,
-    ball: 0xfaf8f0,
-    ballEdge: 0x22262e,
-    keeperRed: 0xf0a0a0,
-    keeperBlue: 0xa0bcf0,
-    outline: 0x14181f,
+    surround: 0x12161c,
+    grass: 0x2f8f46,
+    grassAlt: 0x28803c,
+    line: 0xf5f2e6,
+    net: 0x252b34,
+    red: 0xe5383b,
+    blue: 0x3a86ff,
+    ball: 0xf5f2e6,
+    ballEdge: 0x12161c,
+    keeperRed: 0xf08e90,
+    keeperBlue: 0x94bcff,
+    outline: 0x12161c,
   },
 
   /*
@@ -85,6 +121,7 @@ const Renderer = {
     goalAreaDepth: 52,
     goalAreaHeight: 180,
     cornerRadius: 18,
+    netSpacing: 9,           // gap between the strands of the goal netting
   },
 
   CSS: {
@@ -97,7 +134,37 @@ const Renderer = {
     bad: '#ff7a7a',
   },
 
+  /*
+   * Two roles, no third. The system stack carries small HUD copy and menu instructions,
+   * the display face carries anything that shouts: the title, the score, the clock, the
+   * GOAL banner and the drunk outcome labels. Bangers is listed first and the system
+   * stack behind it, so an offline game simply looks plainer and still runs.
+   */
   FONT: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+  DISPLAY_FONT: '"Bangers", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+
+  /*
+   * Every effect the design pass adds, individually switchable. `on` kills an effect
+   * outright, the scalars tune how loud it is. Nothing here changes what happens in a
+   * match, only how much of a fuss the game makes about it.
+   */
+  JUICE: {
+    squashStretch: { on: true, kick: 0.35, impact: 0.28, recoverMs: 180 },
+    // Shake is a fraction of the viewport, so these are per unit of kick impulse: a 420
+    // pass lands near 0.002 and a 750 shot near 0.007, which is the difference between
+    // barely there and meaty.
+    cameraShake: { on: true, passScale: 0.0000045, shootScale: 0.000009, goal: 0.012, ms: 160 },
+    drunkSway: { on: true, degrees: 4, periodMs: 900 },
+    ballTrail: { on: true, minSpeed: 420, everyMs: 28, fadeMs: 260 },
+    outcomeLabels: { on: true, size: 58, tiltDeg: 8, overshootMs: 260, holdMs: 420 },
+    stumbleJiggle: { on: true, px: 5, shakes: 6 },
+    faceplant: { on: true, spinDeg: 90, stars: 4, orbitPx: 22 },
+    keeperFreeze: { on: true, stars: 3, orbitPx: 16 },
+    goalCelebration: { on: true, flashMs: 140, particles: 46, bannerMs: 900 },
+    kickoffCountdown: { on: true, size: 92 },
+    penaltyDrama: { on: true },
+    fullTimeConfetti: { on: true, pieces: 90 },
+  },
 
   DEPTH: {
     pitch: 0, wall: 5, keeper: 10, player: 20, ball: 30,
@@ -107,19 +174,33 @@ const Renderer = {
   TEAM_NAME: { red: 'RED', blue: 'BLUE' },
 
   /*
-   * Skins. Each one is a set of PALETTE overrides covering both kits and the pitch they
-   * are played on, so picking one is a single Object.assign. `surround` is deliberately
-   * not skinnable: Phaser reads it once when the game is constructed, so changing it
-   * later would leave a stale canvas background behind everything.
+   * Skins. Each supplies the seven named values in THEME and nothing else, and applySkin
+   * derives the rest, so a skin is seven decisions rather than a dozen.
+   *
+   * One caveat worth knowing: Phaser reads the canvas background once when the game is
+   * constructed, so switching to a skin with a different nightBlack leaves that one
+   * colour stale. Nothing shows it, because every screen paints its own surround over
+   * the whole canvas before anything else.
    */
   SKINS: [
+    {
+      key: 'sixpints',
+      name: 'SIX PINTS DEEP',
+      blurb: 'floodlit cage at 11pm, and it knows it is funny',
+      colours: {
+        pitchGreen: 0x2f8f46, stripe: 0x28803c, chalkWhite: 0xf5f2e6,
+        redTeam: 0xe5383b, blueTeam: 0x3a86ff,
+        lagerYellow: 0xffc53d, nightBlack: 0x12161c,
+      },
+    },
     {
       key: 'classic',
       name: 'CLASSIC',
       blurb: 'red and blue, dry summer pitch',
       colours: {
-        red: 0xe04b4b, blue: 0x4b7fe0, keeperRed: 0xf0a0a0, keeperBlue: 0xa0bcf0,
-        grass: 0x2f7d40, grassAlt: 0x35894a, line: 0xf2f2ea, net: 0x1d2430,
+        pitchGreen: 0x2f7d40, stripe: 0x35894a, chalkWhite: 0xf2f2ea,
+        redTeam: 0xe04b4b, blueTeam: 0x4b7fe0,
+        lagerYellow: 0xffd166, nightBlack: 0x101319,
       },
     },
     {
@@ -127,8 +208,9 @@ const Renderer = {
       name: 'FLOODLIT',
       blurb: 'deep green under the lights, kits turned up',
       colours: {
-        red: 0xff5a5a, blue: 0x5aa0ff, keeperRed: 0xffb3b3, keeperBlue: 0xb3d4ff,
-        grass: 0x1f5c31, grassAlt: 0x246a38, line: 0xffffff, net: 0x11161f,
+        pitchGreen: 0x1f5c31, stripe: 0x246a38, chalkWhite: 0xffffff,
+        redTeam: 0xff5a5a, blueTeam: 0x5aa0ff,
+        lagerYellow: 0xffd166, nightBlack: 0x11161f,
       },
     },
     {
@@ -136,8 +218,9 @@ const Renderer = {
       name: 'FROZEN',
       blurb: 'frost underfoot, everything slides a bit further',
       colours: {
-        red: 0xc0392b, blue: 0x2c5fa8, keeperRed: 0xe8a49a, keeperBlue: 0x9db6dd,
-        grass: 0x7f9c88, grassAlt: 0x8caa95, line: 0xffffff, net: 0x2a3038,
+        pitchGreen: 0x7f9c88, stripe: 0x8caa95, chalkWhite: 0xffffff,
+        redTeam: 0xc0392b, blueTeam: 0x2c5fa8,
+        lagerYellow: 0xffd166, nightBlack: 0x2a3038,
       },
     },
     {
@@ -146,8 +229,9 @@ const Renderer = {
       blurb: 'mud, a rail, and a dozen unsteady witnesses',
       crowd: true,
       colours: {
-        red: 0xe86a17, blue: 0x7a3fbf, keeperRed: 0xf2a878, keeperBlue: 0xb99ade,
-        grass: 0x5a6b3a, grassAlt: 0x63753f, line: 0xd8d2c0, net: 0x22261c,
+        pitchGreen: 0x5a6b3a, stripe: 0x63753f, chalkWhite: 0xd8d2c0,
+        redTeam: 0xe86a17, blueTeam: 0x7a3fbf,
+        lagerYellow: 0xffd166, nightBlack: 0x22261c,
       },
     },
   ],
@@ -230,16 +314,49 @@ const Renderer = {
 
   /* ------------------------------------------------------------------ skins */
 
+  /*
+   * The one place a colour is decided. A skin hands over its seven, and everything the
+   * game draws or writes is derived here, so adding a skin is seven values and no
+   * hunting for the shade of a keeper's shirt.
+   */
   applySkin(key) {
     const skin = Renderer.SKINS.find((s) => s.key === key) || Renderer.SKINS[0];
-    Object.assign(Renderer.PALETTE, skin.colours);
+    const T = Object.assign(Renderer.THEME, skin.colours);
+    const P = Renderer.PALETTE;
+    const C = Renderer.CSS;
     Renderer.activeSkin = skin.key;
+    Renderer.paletteVersion += 1;
 
-    // Text names the teams too, so the CSS strings follow the kits. Without this a
-    // Sunday League match announces its orange side in the old red.
-    const hex = (n) => '#' + n.toString(16).padStart(6, '0');
-    Renderer.CSS.red = hex(Renderer.PALETTE.red);
-    Renderer.CSS.blue = hex(Renderer.PALETTE.blue);
+    P.grass = T.pitchGreen;
+    P.grassAlt = T.stripe;
+    P.line = T.chalkWhite;
+    P.red = T.redTeam;
+    P.blue = T.blueTeam;
+    P.ball = T.chalkWhite;
+    P.outline = T.nightBlack;
+    P.ballEdge = T.nightBlack;
+    P.surround = T.nightBlack;
+
+    // Keepers wear a washed out version of their team, so a glance tells you whose goal
+    // it is without them competing with the outfield player for attention.
+    P.keeperRed = Renderer.lighten(T.redTeam, 0.45);
+    P.keeperBlue = Renderer.lighten(T.blueTeam, 0.45);
+
+    // The net sits just off the surround, or the goal mouth disappears into it.
+    P.net = Renderer.lighten(T.nightBlack, 0.14);
+
+    // Text names the teams too, so a Sunday League match announces its orange side in
+    // orange rather than in the old red.
+    C.hud = Renderer.hex(T.chalkWhite);
+    C.accent = Renderer.hex(T.lagerYellow);
+    C.red = Renderer.hex(T.redTeam);
+    C.blue = Renderer.hex(T.blueTeam);
+    C.dim = Renderer.hex(Renderer.mix(T.chalkWhite, T.nightBlack, 0.45));
+    C.good = Renderer.hex(Renderer.lighten(T.pitchGreen, 0.5));
+    C.bad = Renderer.hex(Renderer.lighten(T.redTeam, 0.35));
+
+    // The rail round a Sunday League pitch is painted, not lit, so it comes off the black.
+    Renderer.CROWD.fence = Renderer.lighten(T.nightBlack, 0.28);
 
     // Storage throws in private browsing, and a forgotten skin is not worth a crash.
     try {
@@ -256,17 +373,29 @@ const Renderer = {
     Renderer.applySkin(saved || Renderer.SKINS[0].key);
   },
 
-  /* Baked textures cache by key, so a new palette needs the old ones thrown away first. */
-  rebakeTextures(scene) {
-    ['player_red', 'player_blue', 'keeper_red', 'keeper_blue', 'ball'].forEach((key) => {
-      if (scene.textures.exists(key)) scene.textures.remove(key);
-    });
-    Renderer.makeTextures(scene);
-  },
+  /*
+   * Textures are baked from the palette and cached by key, so a new skin makes them stale.
+   * Throwing them away on the spot crashes the next render, because sprites already on
+   * screen still point at them. So a skin change only bumps a version number, and the
+   * stale textures are replaced at the top of the next scene's create, before that scene
+   * has made a single sprite. Changing a skin therefore means: apply, restart, done.
+   */
+  PALETTE_DEPENDENT_TEXTURES: ['player_red', 'player_blue', 'keeper_red', 'keeper_blue', 'ball'],
+  paletteVersion: 0,
+  bakedVersion: -1,
 
   makeTextures(scene) {
     const P = Renderer.PALETTE;
     const g = scene.make.graphics({ x: 0, y: 0 }, false);
+
+    // Safe here and nowhere else: this scene has not created anything yet, so no sprite
+    // is left holding a texture that is about to be destroyed.
+    if (Renderer.bakedVersion !== Renderer.paletteVersion) {
+      Renderer.PALETTE_DEPENDENT_TEXTURES.forEach((key) => {
+        if (scene.textures.exists(key)) scene.textures.remove(key);
+      });
+      Renderer.bakedVersion = Renderer.paletteVersion;
+    }
 
     const bake = (key, w, h, draw) => {
       if (scene.textures.exists(key)) return;
@@ -313,6 +442,26 @@ const Renderer = {
       g.strokeCircle(fr, fr, fr - 1);
     });
 
+    // Four-pointed star, for the ones circling a stunned player or a frozen keeper.
+    // Baked white so it can be tinted to whatever the theme's yellow happens to be.
+    bake('star', 14, 14, () => {
+      const s = 14;
+      const h = s / 2;
+      const w = 2.4;
+      g.fillStyle(0xffffff, 1);
+      g.beginPath();
+      g.moveTo(h, 0);
+      g.lineTo(h + w, h - w);
+      g.lineTo(s, h);
+      g.lineTo(h + w, h + w);
+      g.lineTo(h, s);
+      g.lineTo(h - w, h + w);
+      g.lineTo(0, h);
+      g.lineTo(h - w, h - w);
+      g.closePath();
+      g.fillPath();
+    });
+
     const br = CONFIG.BALL.radius;
     bake('ball', br * 2, br * 2, () => {
       g.fillStyle(P.ball, 1);
@@ -338,16 +487,100 @@ const Renderer = {
 
   /* ------------------------------------------------------------ text util */
 
+  /*
+   * A 1280x720 canvas stretched across a big retina window puts three or four real pixels
+   * on every game pixel, and everything goes soft. So the canvas is built several times
+   * that size and every camera is zoomed to match, which leaves game coordinates exactly
+   * where they were, 1280x720, while the picture is drawn at something near the display's
+   * real resolution.
+   *
+   * Chosen once at boot, because the canvas cannot be resized afterwards, and capped: past
+   * 3x the pixels cost more than the sharpness is worth.
+   */
+  RENDER_SCALE: 1,
+
+  chooseRenderScale() {
+    const dpr = window.devicePixelRatio || 1;
+    const cssWidth = window.innerWidth || CONFIG.CANVAS.width;
+    const wanted = (dpr * cssWidth) / CONFIG.CANVAS.width;
+    Renderer.RENDER_SCALE = Math.min(3, Math.max(1, Math.round(wanted)));
+    return Renderer.RENDER_SCALE;
+  },
+
+  /*
+   * Zoom cancels the oversized canvas, and centring puts world 0,0 back in the top left
+   * corner. Without the centring a zoomed camera looks at the middle of the world and
+   * the pitch drifts off screen.
+   */
+  frameCamera(scene) {
+    scene.cameras.main
+      .setZoom(Renderer.RENDER_SCALE)
+      .centerOn(CONFIG.CANVAS.width / 2, CONFIG.CANVAS.height / 2);
+  },
+
+  /* Every scene starts the same way: textures baked, camera framed. */
+  beginScene(scene) {
+    Renderer.makeTextures(scene);
+    Renderer.frameCamera(scene);
+  },
+
+  /*
+   * Glyphs are drawn into a texture at creation, so they need rendering at the ratio the
+   * screen will actually show them: the camera's zoom, times however much the canvas is
+   * then scaled to fit the window.
+   */
+  textResolution(scene) {
+    const dpr = window.devicePixelRatio || 1;
+    const shown = scene.scale && scene.scale.displayScale ? scene.scale.displayScale.x : 1;
+    return Math.min(4, Math.max(1, (Renderer.RENDER_SCALE * dpr) / (shown || 1)));
+  },
+
   text(scene, x, y, str, size, colour) {
     return scene.add.text(x, y, str, {
       fontFamily: Renderer.FONT,
       fontSize: size + 'px',
       color: colour || Renderer.CSS.hud,
-    }).setDepth(Renderer.DEPTH.hud);
+    })
+      .setResolution(Renderer.textResolution(scene))
+      .setDepth(Renderer.DEPTH.hud);
   },
 
   centred(scene, y, str, size, colour) {
     return Renderer.text(scene, CONFIG.CANVAS.width / 2, y, str, size, colour)
+      .setOrigin(0.5).setDepth(Renderer.DEPTH.overlay);
+  },
+
+  /*
+   * The shouty role. Bangers has no lower case to speak of and sits high on the line, so
+   * it wants a hard shadow under it to keep it off the grass and stop it swimming.
+   */
+  display(scene, x, y, str, size, colour) {
+    const T = Renderer.THEME;
+    /*
+     * Phaser sizes a text texture from the glyph metrics alone, which know nothing about
+     * the drop shadow hanging below and right, nor about the lean on a slanted face
+     * pushing the last letter past its own advance width. Without padding the corner of
+     * the final glyph is sliced off. Symmetric, so centred text stays centred.
+     */
+    const pad = Math.ceil(size * 0.16) + 4;
+    const label = scene.add.text(x, y, str, {
+      fontFamily: Renderer.DISPLAY_FONT,
+      fontSize: size + 'px',
+      color: colour || Renderer.CSS.hud,
+      padding: { left: pad, right: pad, top: pad, bottom: pad },
+    })
+      .setShadow(3, 4, Renderer.hex(T.nightBlack), 0, true, true)
+      .setResolution(Renderer.textResolution(scene))
+      .setDepth(Renderer.DEPTH.hud);
+
+    // Recorded rather than read back: Phaser does not expose the padding it was given,
+    // and anything measuring this text needs to know how much of it is empty margin.
+    label.inkPad = pad;
+    return label;
+  },
+
+  centredDisplay(scene, y, str, size, colour) {
+    return Renderer.display(scene, CONFIG.CANVAS.width / 2, y, str, size, colour)
       .setOrigin(0.5).setDepth(Renderer.DEPTH.overlay);
   },
 
@@ -471,10 +704,12 @@ const Renderer = {
       g.fillRect(P.left + i * bandWidth, P.top, bandWidth, P.height);
     }
 
-    // Goal recesses behind each line.
+    // Goal recesses behind each line, netting drawn as crosshatch over the dark.
     g.fillStyle(C.net, 1);
     g.fillRect(P.left - P.goalDepth, P.mouthTop, P.goalDepth, P.goalMouth);
     g.fillRect(P.right, P.mouthTop, P.goalDepth, P.goalMouth);
+    Renderer.crosshatch(g, P.left - P.goalDepth, P.mouthTop, P.goalDepth, P.goalMouth);
+    Renderer.crosshatch(g, P.right, P.mouthTop, P.goalDepth, P.goalMouth);
 
     g.lineStyle(3, C.line, 1);
     g.strokeRect(P.left, P.top, P.width, P.height);
@@ -518,6 +753,50 @@ const Renderer = {
     });
 
     return g;
+  },
+
+  /*
+   * Netting: diagonals both ways, clipped to the goal recess. Drawn faintly off the chalk
+   * so it reads as mesh at a glance without competing with the lines on the pitch.
+   */
+  crosshatch(g, x, y, w, h) {
+    const M = Renderer.MARKINGS;
+    const step = M.netSpacing;
+    g.lineStyle(1, Renderer.lighten(Renderer.THEME.chalkWhite, 0), 0.22);
+
+    // A diagonal enters the box along the top edge or the left, so run the origin from
+    // above the box round to its far side and clip each line to the rectangle.
+    for (let d = -h; d < w + h; d += step) {
+      Renderer.clippedLine(g, x + d, y, x + d + h, y + h, x, y, w, h);
+      Renderer.clippedLine(g, x + d, y + h, x + d + h, y, x, y, w, h);
+    }
+  },
+
+  /* Cohen–Sutherland is overkill here: both ends are clamped and the line is redrawn. */
+  clippedLine(g, x1, y1, x2, y2, bx, by, bw, bh) {
+    const left = bx;
+    const right = bx + bw;
+    const top = by;
+    const bottom = by + bh;
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    if (dx === 0 && dy === 0) return;
+
+    let t0 = 0;
+    let t1 = 1;
+    const edges = [[-dx, x1 - left], [dx, right - x1], [-dy, y1 - top], [dy, bottom - y1]];
+    for (let i = 0; i < edges.length; i++) {
+      const p = edges[i][0];
+      const q = edges[i][1];
+      if (p === 0) {
+        if (q < 0) return;
+      } else {
+        const r = q / p;
+        if (p < 0) { if (r > t1) return; if (r > t0) t0 = r; }
+        else { if (r < t0) return; if (r < t1) t1 = r; }
+      }
+    }
+    g.lineBetween(x1 + dx * t0, y1 + dy * t0, x1 + dx * t1, y1 + dy * t1);
   },
 
   /*
@@ -629,8 +908,10 @@ const Renderer = {
     const cx = CONFIG.CANVAS.width / 2;
     const C = Renderer.CSS;
     return {
-      score: Renderer.text(scene, cx, 8, '0 - 0', 34).setOrigin(0.5, 0),
-      timer: Renderer.text(scene, cx, 56, '0:00', 20, C.accent).setOrigin(0.5, 0),
+      // Only 60px of surround above the pitch, and the display face is tall, so the two
+      // are stacked tight and sized to fit rather than left where the old face sat.
+      score: Renderer.display(scene, cx, 0, '0 - 0', 40).setOrigin(0.5, 0),
+      timer: Renderer.display(scene, cx, 49, '0:00', 24, C.accent).setOrigin(0.5, 0),
       left: Renderer.text(scene, 20, 12, Renderer.controlSummary('red', usesMouse), 13, C.dim),
       right: Renderer.text(scene, CONFIG.CANVAS.width - 20, 12,
         mode === 'bot'
@@ -671,30 +952,162 @@ const Renderer = {
     player.sprite.setRotation(player.facing);
   },
 
+  /*
+   * The signature element. These labels are the joke, so they get the budget: oversized in
+   * the display face, slammed in with an overshoot, tilted a few degrees off true, held,
+   * then gone. Everything else on the pitch is deliberately quieter so that these land.
+   *
+   * Colour carries the category. Yellow for the comic ones, red for a disaster, white for
+   * the merely wrong, so you can read what happened before you have read the words.
+   */
+  OUTCOME_TONE: {
+    whiff: 'comic',
+    backheel: 'comic',
+    wildSlice: 'disaster',
+    faceplant: 'disaster',
+  },
+
+  outcomeColour(outcomeKey) {
+    const tone = Renderer.OUTCOME_TONE[outcomeKey];
+    if (tone === 'comic') return Renderer.CSS.accent;
+    if (tone === 'disaster') return Renderer.hex(Renderer.lighten(Renderer.THEME.redTeam, 0.25));
+    return Renderer.CSS.hud;
+  },
+
   onOutcome(scene, player, outcomeKey) {
     const str = Renderer.phraseFor(Renderer.OUTCOME_LABELS, outcomeKey);
     if (!str) return;
-    const label = Renderer.text(scene, player.sprite.x, player.sprite.y - 34, str, 22, Renderer.CSS.accent)
-      .setOrigin(0.5).setDepth(Renderer.DEPTH.label);
+
+    const J = Renderer.JUICE.outcomeLabels;
+    if (!J.on) return;
+
+    const label = Renderer.display(scene, player.sprite.x, player.sprite.y - 44, str,
+      J.size, Renderer.outcomeColour(outcomeKey))
+      .setOrigin(0.5)
+      .setDepth(Renderer.DEPTH.label)
+      .setAngle(Phaser.Math.Between(-J.tiltDeg, J.tiltDeg))
+      .setScale(0.4);
+
+    // Keep it on screen: a wide label thrown by a player near the touchline would
+    // otherwise hang off the edge where you cannot read it.
+    const halfWidth = label.displayWidth / 2;
+    label.x = Phaser.Math.Clamp(label.x, halfWidth + 12, CONFIG.CANVAS.width - halfWidth - 12);
+    label.y = Math.max(label.y, label.displayHeight / 2 + 8);
+
     scene.tweens.add({
       targets: label,
-      y: label.y - 34,
+      scale: 1,
+      duration: J.overshootMs,
+      ease: 'Back.easeOut',
+      onComplete: () => {
+        scene.tweens.add({
+          targets: label,
+          y: label.y - 30,
+          alpha: 0,
+          delay: J.holdMs,
+          duration: CONFIG.FEEDBACK.labelMs,
+          ease: 'Quad.easeIn',
+          onComplete: () => label.destroy(),
+        });
+      },
+    });
+  },
+
+  /*
+   * A burst of squares in a team colour, thrown from a point. Used for a goal and, in
+   * bulk and falling, for full time. Plain images rather than a particle emitter, because
+   * a few dozen of them is nothing and this way each one can be given its own arc.
+   */
+  burst(scene, x, y, colour, count, spread, gravity) {
+    for (let i = 0; i < count; i++) {
+      const piece = scene.add.image(x, y, 'px')
+        .setDisplaySize(Phaser.Math.Between(5, 11), Phaser.Math.Between(5, 11))
+        .setTint(colour)
+        .setDepth(Renderer.DEPTH.overlay - 1)
+        .setAngle(Phaser.Math.Between(0, 360));
+
+      const angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
+      const reach = Phaser.Math.Between(spread * 0.35, spread);
+      const ms = Phaser.Math.Between(520, 1100);
+
+      scene.tweens.add({
+        targets: piece,
+        x: x + Math.cos(angle) * reach,
+        y: y + Math.sin(angle) * reach + gravity,
+        angle: piece.angle + Phaser.Math.Between(-320, 320),
+        alpha: 0,
+        duration: ms,
+        ease: 'Quad.easeOut',
+        onComplete: () => piece.destroy(),
+      });
+    }
+  },
+
+  /* A flash of the whole screen, brief enough to register without blinding anyone. */
+  flash(scene, colour, ms) {
+    const sheet = scene.add.image(CONFIG.CANVAS.width / 2, CONFIG.CANVAS.height / 2, 'px')
+      .setDisplaySize(CONFIG.CANVAS.width, CONFIG.CANVAS.height)
+      .setTint(colour)
+      .setAlpha(0.55)
+      .setDepth(Renderer.DEPTH.overlay - 2);
+    scene.tweens.add({
+      targets: sheet,
       alpha: 0,
-      duration: CONFIG.FEEDBACK.labelMs,
+      duration: ms,
       ease: 'Quad.easeOut',
-      onComplete: () => label.destroy(),
+      onComplete: () => sheet.destroy(),
     });
   },
 
   onGoal(scene, team, scores) {
-    const label = Renderer.centred(scene, CONFIG.CANVAS.height / 2, 'GOAL!', 96,
-      team === 'red' ? Renderer.CSS.red : Renderer.CSS.blue);
+    const J = Renderer.JUICE.goalCelebration;
+    const teamColour = team === 'red' ? Renderer.THEME.redTeam : Renderer.THEME.blueTeam;
+    const cx = CONFIG.CANVAS.width / 2;
+    const cy = CONFIG.CANVAS.height / 2;
+
+    if (J.on) {
+      Renderer.flash(scene, teamColour, J.flashMs);
+      Renderer.burst(scene, cx, cy, teamColour, J.particles, 420, 60);
+      if (Renderer.JUICE.cameraShake.on) {
+        scene.cameras.main.shake(Renderer.JUICE.cameraShake.ms * 2,
+          Renderer.JUICE.cameraShake.goal);
+      }
+    }
+
+    // The banner sweeps in from the left and holds mid-screen, so the eye is dragged
+    // across the pitch rather than having the word simply appear on top of it.
+    const label = Renderer.display(scene, J.on ? -400 : cx, cy, 'GOAL!', 120,
+      team === 'red' ? Renderer.CSS.red : Renderer.CSS.blue)
+      .setOrigin(0.5)
+      .setDepth(Renderer.DEPTH.overlay);
+
+    if (!J.on) {
+      scene.tweens.add({
+        targets: label,
+        alpha: 0,
+        duration: CONFIG.MATCH.goalPauseMs,
+        ease: 'Quad.easeIn',
+        onComplete: () => label.destroy(),
+      });
+      return;
+    }
+
     scene.tweens.add({
       targets: label,
-      alpha: 0,
-      duration: CONFIG.MATCH.goalPauseMs,
-      ease: 'Quad.easeIn',
-      onComplete: () => label.destroy(),
+      x: cx,
+      duration: J.bannerMs * 0.4,
+      ease: 'Back.easeOut',
+      onComplete: () => {
+        scene.tweens.add({
+          targets: label,
+          x: CONFIG.CANVAS.width + 400,
+          alpha: 0,
+          delay: Math.max(0, CONFIG.MATCH.goalPauseMs - J.bannerMs),
+          duration: J.bannerMs * 0.5,
+          ease: 'Back.easeIn',
+          onComplete: () => label.destroy(),
+        });
+      },
     });
   },
 
@@ -715,30 +1128,240 @@ const Renderer = {
 
   /* Drawn below the centre spot: the side kicking off now stands on the spot with the
    * ball at its feet, so the count must not sit on top of them. */
+  /* Each number lands big and shrinks away, so the count reads as a beat rather than a
+   * caption that happens to change. */
   onKickoffCount(scene, n) {
-    const label = Renderer.centred(scene, CONFIG.CANVAS.height / 2 + 130,
-      n > 0 ? String(n) : 'GO!', n > 0 ? 88 : 64);
+    const J = Renderer.JUICE.kickoffCountdown;
+    const isGo = n <= 0;
+    const label = Renderer.centredDisplay(scene, CONFIG.CANVAS.height / 2 + 120,
+      isGo ? 'GO!' : String(n), J.on ? J.size : 88,
+      isGo ? Renderer.CSS.accent : Renderer.CSS.hud);
+
+    if (!J.on) {
+      scene.tweens.add({
+        targets: label,
+        alpha: 0,
+        duration: CONFIG.MATCH.kickoffStepMs,
+        onComplete: () => label.destroy(),
+      });
+      return;
+    }
+
+    label.setScale(isGo ? 0.5 : 1.6);
+    scene.tweens.add({
+      targets: label,
+      scale: isGo ? 1.25 : 1,
+      duration: CONFIG.MATCH.kickoffStepMs * 0.45,
+      ease: isGo ? 'Back.easeOut' : 'Quad.easeOut',
+    });
     scene.tweens.add({
       targets: label,
       alpha: 0,
       duration: CONFIG.MATCH.kickoffStepMs,
+      ease: 'Quad.easeIn',
       onComplete: () => label.destroy(),
     });
   },
 
   /* Defined now so the design pass has somewhere to hang an effect without
    * touching game logic. Deliberately silent in Phase 1. */
-  onKick(scene, player, kind, impulse) {},
-  onWallBounce(scene, x, y, speed) {},
-  onKeeperSave(scene, keeper, speed) {},
+  /* ------------------------------------------------------------------ juice */
+
+  /*
+   * Squash and stretch. Everything springs back to 1, so an effect interrupted by another
+   * still ends up the right shape rather than stuck mid-squash.
+   */
+  pulse(scene, sprite, scaleX, scaleY, ms) {
+    sprite.setScale(scaleX, scaleY);
+    scene.tweens.add({
+      targets: sprite,
+      scaleX: 1,
+      scaleY: 1,
+      duration: ms,
+      ease: 'Back.easeOut',
+    });
+  },
+
+  /*
+   * Stars circling a head. Pass ms 0 for "until stopped", which is what a keeper freeze
+   * needs since nobody knows in advance how long it lasts. Returns a stop function either
+   * way, so the caller never has to care which kind it asked for.
+   */
+  orbitStars(scene, follow, count, radius, ms) {
+    const stars = [];
+    for (let i = 0; i < count; i++) {
+      stars.push(scene.add.image(follow.x, follow.y, 'star')
+        .setTint(Renderer.THEME.lagerYellow)
+        .setDepth(Renderer.DEPTH.label));
+    }
+
+    // Squashed vertically so they read as circling above a head, not orbiting flat.
+    const place = (t) => {
+      stars.forEach((star, i) => {
+        const angle = t * Math.PI * 2 + (i / count) * Math.PI * 2;
+        star.x = follow.x + Math.cos(angle) * radius;
+        star.y = follow.y - 22 + Math.sin(angle) * radius * 0.4;
+      });
+    };
+
+    // Spread before the first tween update, or every star spends frame one stacked on
+    // the same spot and the ring appears to pop into existence.
+    place(0);
+
+    const spin = { t: 0 };
+    const tween = scene.tweens.add({
+      targets: spin,
+      t: 1,
+      duration: 900,
+      repeat: -1,
+      onUpdate: () => place(spin.t),
+    });
+
+    const stop = () => {
+      tween.stop();
+      stars.forEach((star) => star.destroy());
+    };
+    if (ms > 0) scene.time.delayedCall(ms, stop);
+    return stop;
+  },
+
+  onKick(scene, player, kind, impulse) {
+    const J = Renderer.JUICE;
+
+    if (J.squashStretch.on) {
+      const k = J.squashStretch.kick;
+      Renderer.pulse(scene, player.sprite, 1 + k, 1 - k * 0.7, J.squashStretch.recoverMs);
+    }
+
+    if (J.cameraShake.on) {
+      const per = kind === 'shoot' ? J.cameraShake.shootScale : J.cameraShake.passScale;
+      scene.cameras.main.shake(J.cameraShake.ms, impulse * per);
+    }
+  },
+
+  onWallBounce(scene, x, y, speed) {
+    const J = Renderer.JUICE.squashStretch;
+    if (!J.on || speed < 120) return;
+    const ball = scene.children.list.find((o) => o.texture && o.texture.key === 'ball'
+      && o.depth === Renderer.DEPTH.ball);
+    if (ball) Renderer.pulse(scene, ball, 1 - J.impact, 1 + J.impact, J.recoverMs);
+  },
+
+  onKeeperSave(scene, keeper, speed) {
+    const J = Renderer.JUICE;
+    if (J.squashStretch.on) {
+      Renderer.pulse(scene, keeper.sprite, 1 - J.squashStretch.impact * 0.5,
+        1 + J.squashStretch.impact, J.squashStretch.recoverMs);
+    }
+    if (J.cameraShake.on && speed > 300) {
+      scene.cameras.main.shake(J.cameraShake.ms * 0.7, J.cameraShake.shootScale * speed * 0.6);
+    }
+  },
+
   onKeeperClear(scene, keeper, mate) {},
-  onKeeperFreeze(scene, keeper, frozen) {},
+
+  /*
+   * A frozen keeper is the scoring window, so it has to be readable at a glance rather
+   * than something you infer from it not moving.
+   */
+  onKeeperFreeze(scene, keeper, frozen) {
+    const J = Renderer.JUICE.keeperFreeze;
+    if (!J.on) return;
+
+    if (!frozen) {
+      if (keeper.freezeFx) {
+        keeper.freezeFx();
+        keeper.freezeFx = null;
+      }
+      return;
+    }
+    if (keeper.freezeFx) return;
+    keeper.freezeFx = Renderer.orbitStars(scene, keeper.sprite, J.stars, J.orbitPx, 0);
+  },
+
   onPossessionChange(scene, player) {},
-  onStumble(scene, player, ms) {},
-  onFaceplant(scene, player, ms) {},
+
+  onStumble(scene, player, ms) {
+    const J = Renderer.JUICE.stumbleJiggle;
+    if (!J.on) return;
+    const home = player.sprite.x;
+    scene.tweens.add({
+      targets: player.sprite,
+      x: home + J.px,
+      duration: Math.max(40, ms / J.shakes),
+      yoyo: true,
+      repeat: J.shakes,
+      ease: 'Sine.easeInOut',
+      onComplete: () => { player.sprite.x = home; },
+    });
+  },
+
+  onFaceplant(scene, player, ms) {
+    const J = Renderer.JUICE.faceplant;
+    if (!J.on) return;
+
+    const upright = player.sprite.rotation;
+    scene.tweens.add({
+      targets: player.sprite,
+      rotation: upright + Phaser.Math.DegToRad(J.spinDeg),
+      duration: 320,
+      ease: 'Bounce.easeOut',
+    });
+
+    Renderer.orbitStars(scene, player.sprite, J.stars, J.orbitPx, ms);
+
+    // Back on their feet exactly when the stun ends, so the picture and the rules agree.
+    scene.time.delayedCall(ms, () => {
+      scene.tweens.add({
+        targets: player.sprite,
+        rotation: player.facing,
+        duration: 180,
+        ease: 'Quad.easeOut',
+      });
+    });
+  },
   onPenaltyResult(scene, team, outcomeKey, scored) {},
   onFullTime(scene, result) {},
-  onTick(scene, view, time, delta) {},
+  /*
+   * The two effects that run every frame rather than firing on an event.
+   *
+   * The sway is the theme made continuous: a slow sine wobble laid on top of facing, never
+   * replacing it, and capped small. Facing is the only thing telling you which way a
+   * player will kick, so it has to survive being wobbled.
+   */
+  onTick(scene, view, time, delta) {
+    const J = Renderer.JUICE;
+    if (!scene.juiceState) scene.juiceState = { nextTrailAt: 0 };
+
+    if (J.drunkSway.on) {
+      const amplitude = Phaser.Math.DegToRad(J.drunkSway.degrees);
+      view.players.forEach((player, i) => {
+        // Not while they are on the floor: the faceplant owns the rotation until they are up.
+        if (time < player.stunnedUntil) return;
+        const moving = player.sprite.body.speed > 5;
+        // Offset per player, or the two of them wobble in lockstep like a dance troupe.
+        const phase = (time / J.drunkSway.periodMs) * Math.PI * 2 + i * 2.1;
+        player.sprite.setRotation(player.facing + (moving ? Math.sin(phase) * amplitude : 0));
+      });
+    }
+
+    if (J.ballTrail.on && view.ball.body.speed > J.ballTrail.minSpeed
+      && time >= scene.juiceState.nextTrailAt) {
+      scene.juiceState.nextTrailAt = time + J.ballTrail.everyMs;
+      const dot = scene.add.image(view.ball.x, view.ball.y, 'ball')
+        .setDepth(Renderer.DEPTH.ball - 1)
+        .setScale(0.75)
+        .setAlpha(0.45);
+      scene.tweens.add({
+        targets: dot,
+        alpha: 0,
+        scale: 0.2,
+        duration: J.ballTrail.fadeMs,
+        ease: 'Quad.easeOut',
+        onComplete: () => dot.destroy(),
+      });
+    }
+  },
 
   /* ----------------------------------------------------------- menu scene */
 
@@ -752,8 +1375,10 @@ const Renderer = {
       .fillStyle(Renderer.PALETTE.grass, 1)
       .fillRect(0, 205, CONFIG.CANVAS.width, 290);
 
-    Renderer.centred(scene, 110, 'DRUNK FOOTBALL', 76);
-    Renderer.centred(scene, 166, 'you know what you meant to do', 20, C.dim);
+    // The display face is a good deal taller than the system stack at the same size, so
+    // the subtitle needs pushing clear of it rather than sitting where it always did.
+    Renderer.centredDisplay(scene, 104, 'DRUNK FOOTBALL', 92);
+    Renderer.centred(scene, 176, 'you know what you meant to do', 20, C.dim);
 
     Renderer.keyTable(scene, cx - 250, 250, 34, cx - 20, cx + 205, 22);
 
@@ -834,15 +1459,15 @@ const Renderer = {
       .fillStyle(Renderer.PALETTE.surround, 1)
       .fillRect(0, 0, CONFIG.CANVAS.width, CONFIG.CANVAS.height)
       .fillStyle(Renderer.PALETTE.grass, 1)
-      .fillRect(0, 205, CONFIG.CANVAS.width, 395);   // deep enough for the key table
+      .fillRect(0, 205, CONFIG.CANVAS.width, 405);   // deep enough for five skins and the key table
 
     Renderer.centred(scene, 110, 'SETTINGS', 66);
     Renderer.centred(scene, 166, 'kept between sessions', 20, C.dim);
 
-    Renderer.text(scene, nameX, 226, 'SKIN', 18, C.accent).setDepth(Renderer.DEPTH.overlay);
+    Renderer.text(scene, nameX, 220, 'SKIN', 18, C.accent).setDepth(Renderer.DEPTH.overlay);
 
     Renderer.SKINS.forEach((skin, i) => {
-      const y = 258 + i * 34;
+      const y = 258 + i * 32;
       const current = skin.key === Renderer.activeSkin;
       if (current) {
         Renderer.text(scene, nameX - 26, y, '>', 20, C.hud)
@@ -854,7 +1479,7 @@ const Renderer = {
         .setOrigin(0, 0.5).setDepth(Renderer.DEPTH.overlay);
       // Each swatch gets a dark backing, or a skin whose grass matches the band behind it
       // appears to be missing one.
-      [skin.colours.red, skin.colours.blue, skin.colours.grass].forEach((colour, j) => {
+      [skin.colours.redTeam, skin.colours.blueTeam, skin.colours.pitchGreen].forEach((colour, j) => {
         scene.add.image(swatchX + j * 28, y, 'px')
           .setDisplaySize(26, 26).setTint(Renderer.PALETTE.outline)
           .setDepth(Renderer.DEPTH.overlay);
@@ -863,18 +1488,18 @@ const Renderer = {
       });
     });
 
-    Renderer.text(scene, nameX, 400, 'CONTROLS', 18, C.accent).setDepth(Renderer.DEPTH.overlay);
+    Renderer.text(scene, nameX, 420, 'CONTROLS', 18, C.accent).setDepth(Renderer.DEPTH.overlay);
 
     // Further right than the skin blurbs, because this label is a good deal wider.
-    Renderer.optionAt(scene, nameX, 430,
+    Renderer.optionAt(scene, nameX, 458,
       'M   MOUSE CLICKS   ' + (state.mouseClicks ? 'ON' : 'OFF'), 22, handlers.mouse);
-    Renderer.text(scene, cx - 10, 430,
+    Renderer.text(scene, cx - 10, 458,
       'left click passes, right click shoots, one player only', 14, C.dim)
       .setOrigin(0, 0.5).setDepth(Renderer.DEPTH.overlay);
 
     // The keys themselves, read straight out of CONFIG.CONTROLS so a remap can never
     // leave this screen telling you something the game no longer does.
-    Renderer.keyTable(scene, nameX, 466, 30, nameX + 230, nameX + 410, 20);
+    Renderer.keyTable(scene, nameX, 492, 28, nameX + 230, nameX + 410, 20);
 
     // Under the settings rather than among them, because it is not one: it leaves for a
     // different build of the game entirely.
@@ -941,6 +1566,26 @@ const Renderer = {
 
     const centredAt = (x, y, size, colour) =>
       Renderer.text(scene, x, y, '', size, colour).setOrigin(0.5).setDepth(Renderer.DEPTH.overlay);
+    const displayAt = (x, y, size, colour) =>
+      Renderer.display(scene, x, y, '', size, colour).setOrigin(0.5)
+        .setDepth(Renderer.DEPTH.overlay);
+
+    /*
+     * The empty half is dressed as a broadcast panel: a dark card with a bar down its
+     * edge, the running score large in the display face, the tally underneath. Framing
+     * rather than decoration, so the shootout feels like an occasion.
+     */
+    if (Renderer.JUICE.penaltyDrama.on) {
+      scene.add.image(textX, 232, 'px')
+        .setDisplaySize(430, 210)
+        .setTint(Renderer.THEME.nightBlack)
+        .setAlpha(0.82)
+        .setDepth(Renderer.DEPTH.overlay - 2);
+      scene.add.image(textX - 210, 232, 'px')
+        .setDisplaySize(10, 210)
+        .setTint(Renderer.THEME.lagerYellow)
+        .setDepth(Renderer.DEPTH.overlay - 2);
+    }
 
     return {
       geom,
@@ -949,12 +1594,12 @@ const Renderer = {
         .setDepth(Renderer.DEPTH.keeper),
       ball: scene.add.image(geom.spotX, geom.spotY, 'ball').setDepth(Renderer.DEPTH.ball),
       // Stacked above and below the centre circle, never across it.
-      score: centredAt(textX, 150, 32),
-      round: centredAt(textX, 192, 17, C.dim),
-      tallyRed: Renderer.text(scene, textX - 120, 240, '', 24, C.red).setDepth(Renderer.DEPTH.overlay),
-      tallyBlue: Renderer.text(scene, textX - 120, 276, '', 24, C.blue).setDepth(Renderer.DEPTH.overlay),
+      score: displayAt(textX, 168, 56),
+      round: centredAt(textX, 208, 17, C.dim),
+      tallyRed: Renderer.text(scene, textX - 150, 252, '', 24, C.red).setDepth(Renderer.DEPTH.overlay),
+      tallyBlue: Renderer.text(scene, textX - 150, 288, '', 24, C.blue).setDepth(Renderer.DEPTH.overlay),
       prompt: centredAt(textX, 520, 28, C.accent),
-      result: centredAt(textX, 575, 34),
+      result: displayAt(textX, 578, 44),
     };
   },
 
@@ -1061,20 +1706,44 @@ const Renderer = {
     // scoreline that is only the penalties.
     const standalone = !result.scores;
 
-    Renderer.centred(scene, 150, standalone ? 'SHOOTOUT OVER' : 'FULL TIME', 60, C.dim);
-    Renderer.centred(scene, 268,
-      result.winner ? Renderer.TEAM_NAME[result.winner] + ' WINS' : 'HONOURS EVEN', 88, winnerColour);
+    Renderer.centred(scene, 150, standalone ? 'SHOOTOUT OVER' : 'FULL TIME', 40, C.dim);
+    Renderer.centredDisplay(scene, 262,
+      result.winner ? Renderer.TEAM_NAME[result.winner] + ' WINS' : 'HONOURS EVEN', 96, winnerColour);
 
-    let scoreline;
-    if (standalone) {
-      scoreline = result.penalties.red + ' - ' + result.penalties.blue + '  on penalties';
-    } else {
-      scoreline = result.scores.red + ' - ' + result.scores.blue;
-      if (result.penalties) {
-        scoreline += '  (' + result.penalties.red + ' - ' + result.penalties.blue + ' on penalties)';
-      }
+    /*
+     * The scoreline as a broadcast caption: a bar in the winner's colour with the numbers
+     * sitting in it, rather than a line of text floating on the grass.
+     */
+    const cx = CONFIG.CANVAS.width / 2;
+    const barY = 372;
+    const winnerTint = result.winner === 'red' ? Renderer.THEME.redTeam
+      : result.winner === 'blue' ? Renderer.THEME.blueTeam : Renderer.THEME.lagerYellow;
+
+    scene.add.image(cx, barY, 'px')
+      .setDisplaySize(430, 74)
+      .setTint(Renderer.THEME.nightBlack)
+      .setDepth(Renderer.DEPTH.overlay - 1);
+    scene.add.image(cx - 215 + 5, barY, 'px')
+      .setDisplaySize(10, 74)
+      .setTint(winnerTint)
+      .setDepth(Renderer.DEPTH.overlay - 1);
+
+    const bigScore = standalone
+      ? result.penalties.red + ' - ' + result.penalties.blue
+      : result.scores.red + ' - ' + result.scores.blue;
+    Renderer.centredDisplay(scene, barY - 6, bigScore, 54);
+
+    const suffix = standalone ? 'on penalties'
+      : result.penalties
+        ? 'after penalties, ' + result.penalties.red + ' - ' + result.penalties.blue
+        : '';
+    if (suffix) Renderer.centred(scene, barY + 44, suffix, 16, C.dim);
+
+    if (Renderer.JUICE.fullTimeConfetti.on && result.winner) {
+      // Thrown from above the screen so it falls through the caption rather than out of it.
+      Renderer.burst(scene, cx, -40, winnerTint,
+        Renderer.JUICE.fullTimeConfetti.pieces, CONFIG.CANVAS.width * 0.55, 780);
     }
-    Renderer.centred(scene, 366, scoreline, 44);
 
     Renderer.centred(scene, 570, standalone ? 'SPACE  shoot again' : 'SPACE  rematch', 30, C.accent);
     Renderer.centred(scene, 612, 'M  menu', 30, C.accent);

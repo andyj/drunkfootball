@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Drunk Football — validation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bangers&display=swap" rel="stylesheet">
+  <style>
+    html, body { margin: 0; padding: 0; background: #12161c; color: #f5f2e6; }
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; font-size: 14px; }
+
+    /*
+     * The game runs for real, just small and out of the way of the report. Scoped away
+     * from visual mode, where Phaser's own scale manager is left to size the canvas: an
+     * override here would fight it and show the canvas at its native 3840px.
+     */
+    body:not(.visual) #game { width: 640px; height: 360px; overflow: hidden; }
+    body:not(.visual) #game canvas { width: 640px !important; height: 360px !important; }
+
+    /*
+     * tests.html?visual hands the whole window to the game, for the sign-off pass where
+     * each effect is staged, frozen and photographed at full size.
+     */
+    body.visual { display: flex; align-items: center; justify-content: center; height: 100vh; overflow: hidden; }
+    body.visual #panel { display: none; }
+
+    #panel { padding: 14px 18px 40px; }
+    h1 { font-family: "Bangers", system-ui, sans-serif; font-size: 34px; margin: 0 0 2px; letter-spacing: 0.04em; }
+    .sub { color: #9aa4b2; margin-bottom: 14px; }
+    button {
+      font: inherit; color: #12161c; background: #ffc53d; border: 0;
+      padding: 7px 14px; border-radius: 4px; cursor: pointer; margin-right: 8px;
+    }
+    button:hover { background: #f5f2e6; }
+    #tally { margin: 14px 0 10px; font-size: 18px; }
+    .ok { color: #7bd88f; }
+    .bad { color: #ff7a7a; }
+    table { border-collapse: collapse; width: 100%; max-width: 1100px; }
+    td { padding: 4px 10px 4px 0; border-bottom: 1px solid #232833; vertical-align: top; }
+    td.grp { color: #9aa4b2; width: 130px; }
+    td.res { width: 60px; font-weight: 600; }
+    td.det { color: #9aa4b2; }
+  </style>
+</head>
+<body>
+  <div id="game"></div>
+  <div id="panel">
+    <h1>Drunk Football — validation</h1>
+    <div class="sub">Every check runs against the real game booted above.</div>
+    <button id="run">Run all checks</button>
+    <button id="resume">Resume the game</button>
+    <div id="tally">Booting…</div>
+    <table id="rows"></table>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/phaser@4.2.1/dist/phaser-arcade-physics.min.js"></script>
+  <script src="render.js"></script>
+  <script src="game.js"></script>
+  <script src="tests.js"></script>
+  <script>
+    (function () {
+      'use strict';
+      var tally = document.getElementById('tally');
+      var rows = document.getElementById('rows');
+      var visual = window.location.search.indexOf('visual') !== -1;
+      if (visual) document.body.classList.add('visual');
+
+      function render(summary) {
+        tally.innerHTML = summary.failed === 0
+          ? '<span class="ok">' + summary.passed + ' of ' + summary.total + ' passed</span>'
+          : '<span class="bad">' + summary.failed + ' failed</span> of ' + summary.total;
+        rows.innerHTML = summary.results.map(function (r) {
+          return '<tr><td class="grp">' + r.group + '</td>'
+            + '<td class="res ' + (r.passed ? 'ok' : 'bad') + '">' + (r.passed ? 'pass' : 'FAIL') + '</td>'
+            + '<td>' + r.name + '</td>'
+            + '<td class="det">' + (r.detail || '') + '</td></tr>';
+        }).join('');
+      }
+
+      function run() {
+        tally.textContent = 'Running…';
+        window.setTimeout(function () {
+          window.LAST_RESULTS = DrunkTests.run();
+          render(window.LAST_RESULTS);
+        }, 30);
+      }
+
+      document.getElementById('run').addEventListener('click', run);
+      document.getElementById('resume').addEventListener('click', function () {
+        DrunkTests.resume();
+      });
+
+      // The game boots behind a font wait, so poll rather than guess at a delay.
+      var waited = 0;
+      var poll = window.setInterval(function () {
+        waited += 100;
+        if (window.game && window.game.isBooted) {
+          window.clearInterval(poll);
+          window.GAME_READY = true;
+          if (!visual) run();
+          else tally.textContent = 'visual mode';
+        } else if (waited > 8000) {
+          window.clearInterval(poll);
+          tally.innerHTML = '<span class="bad">the game never booted</span>';
+        }
+      }, 100);
+    }());
+  </script>
+</body>
+</html>
