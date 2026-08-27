@@ -500,6 +500,21 @@ function touchWanted() {
 }
 
 /*
+ * ?wide on the address builds the world a phone gets, whatever the controls are set to:
+ * the suite plays both frames that way, and it is how that frame gets looked at on a
+ * desktop. The frame only, not the thumb controls, which stay the setting's business.
+ *
+ * Read here rather than set from the page, because the game boots off a promise: with the
+ * display face already cached that boot runs as a microtask, and microtasks drain before
+ * the next script tag on the page has run at all. A flag set from the page arrived after
+ * the canvas had been sized, so half the suite quietly played the narrow frame twice and
+ * a written down coordinate got through it.
+ */
+function wideFrameAsked() {
+  return window.location.search.indexOf('wide') !== -1;
+}
+
+/*
  * Legacy mode is the game as it stood at the commit that put blue's kicks on - and =,
  * kept whole in legacy/ rather than reconstructed from flags. Every feature added since
  * would need its own conditional otherwise, and a copy is the honest article: the same
@@ -2261,8 +2276,12 @@ class FullTimeScene extends Phaser.Scene {
 
 /* ========================================================================== */
 
-/* Before the game exists, so the first pitch and the first menu are already yours. */
-Renderer.loadSkin();
+/*
+ * Before the game exists, so the first pitch and the first menu are already dressed. The
+ * ground and the volume are yours from last time; the skin is not, because it opens on
+ * classic every run whatever it was left on.
+ */
+Renderer.applySkin(Renderer.DEFAULT_SKIN);
 Renderer.loadStadium();
 loadPrefs();
 
@@ -2287,7 +2306,7 @@ function boot() {
  * Decided once, here, because the canvas cannot be resized afterwards. Changing the
  * setting later therefore reloads the page rather than pretending to take effect.
  */
-if (touchWanted()) {
+if (touchWanted() || wideFrameAsked()) {
   useWideFrame();
   deriveGeometry();
 }

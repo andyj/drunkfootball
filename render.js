@@ -240,15 +240,13 @@ const Renderer = {
   ENTRANCE: { fadeMs: 420 },
 
   /*
-   * The players' tunnel: a hole cut clean through the near stand, front to back, with the
-   * seating parting either side of it. Not on the halfway line, where a tunnel belongs,
-   * because the score and the clock are written there and a black rectangle behind the
-   * numbers is a smudge rather than a way out. Nor in the middle of the block it comes
-   * through, because that is where that block's own way out is cut. What is left is the
-   * near end of it, which is where plenty of real ones are anyway.
+   * The players' tunnel: a hole cut clean through the near stand, front to back, on the
+   * halfway line where a tunnel belongs. That is the one stretch of the stand with no
+   * seating in it, because the score and the clock are written above it, so the mouth
+   * costs nobody their seat and the numbers sit over the dark of it.
    */
   TUNNEL: {
-    alongPitch: 0.27,
+    alongPitch: 0.5,
     width: 36,             // one at a time, which is how a team comes out of one anyway
     deepen: 0.5,           // the far half darker, so it reads as going somewhere
     deepFraction: 0.55,
@@ -261,15 +259,14 @@ const Renderer = {
   currentStadium: null,
 
   /*
-   * The referee. Stood off the pitch at the mouth of the tunnel, which is where he waits
-   * for them: near enough to come out with the teams, far enough over that they are not
-   * walking through him. He is the only figure in the ground with a job, and the only one
-   * drawn in front of the rail.
+   * The referee. Stood on the near touchline, off the pitch and off the halfway line: near
+   * enough to the middle to see both goals, far enough along that the teams walking out of
+   * the tunnel are not walking through him. He is the only figure in the ground with a job,
+   * and the only one drawn in front of the rail.
    */
   REFEREE: {
     radius: 9,
-    alongPitch: 0.36,      // fraction of the pitch width, on a ground with no tunnel
-    besideTunnel: 30,      // and beside the mouth on every ground that has one
+    alongPitch: 0.36,      // fraction of the pitch width, from the left-hand goal line
     offLine: 12,           // how far outside the touchline he stands
     blowScale: 1.35,       // the puff he gives it
     blowMs: 190,
@@ -515,11 +512,12 @@ const Renderer = {
     },
   ],
 
-  SKIN_STORAGE_KEY: 'drunkfootball.skin',
   /*
-   * Named rather than taken from the top of the list. The order of SKINS is what the
-   * settings screen shows and which number picks which, and reordering it must not quietly
-   * change what a new player starts on.
+   * What every run opens on, whatever the last one was left set to. The skins are a laugh
+   * to be reached for rather than a wardrobe to be kept: this game should look like this
+   * game when you load it. Named rather than taken from the top of the list, because the
+   * order of SKINS is what the settings screen shows and which number picks which, and
+   * reordering it must not quietly change what the game opens on.
    */
   DEFAULT_SKIN: 'classic',
   activeSkin: 'classic',
@@ -642,20 +640,6 @@ const Renderer = {
 
     // The rail round a Sunday League pitch is painted, not lit, so it comes off the black.
     Renderer.CROWD.fence = Renderer.lighten(T.nightBlack, 0.28);
-
-    // Storage throws in private browsing, and a forgotten skin is not worth a crash.
-    try {
-      window.localStorage.setItem(Renderer.SKIN_STORAGE_KEY, skin.key);
-    } catch (err) { /* nothing worth doing */ }
-  },
-
-  /* Called once before the game is constructed, so the first pitch drawn is the right one. */
-  loadSkin() {
-    let saved = null;
-    try {
-      saved = window.localStorage.getItem(Renderer.SKIN_STORAGE_KEY);
-    } catch (err) { saved = null; }
-    Renderer.applySkin(saved || Renderer.DEFAULT_SKIN);
   },
 
   /*
@@ -1062,9 +1046,14 @@ const Renderer = {
     rowGap: 26,
   },
 
-  /* The volume bar: ten blocks, each one a setting you can click straight to. */
+  /*
+   * The volume bar: ten blocks, each one a setting you can click straight to. Placed from
+   * the middle of the screen, the way every column on that screen is placed: written down
+   * as an x it sat where it was put in the narrow frame and slid out from under the labels
+   * the moment a thumb-controlled frame made the canvas wider.
+   */
   VOLUME_BAR: {
-    x: 496,            // clear of the widest label, and clear of the blurb column
+    fromMiddle: -144,  // clear of the widest label, and clear of the blurb column
     block: 9,
     gap: 3,
     height: 15,
@@ -1477,16 +1466,12 @@ const Renderer = {
     return { x: t.x, y: Math.min(t.mouth, t.back) + r };
   },
 
-  /*
-   * Beside the mouth, or on the near touchline at a ground with no stand, which is a
-   * ground with no tunnel either.
-   */
+  /* On the touchline, whatever the ground: every one of them has a touchline. */
   refereeSpot() {
     const P = CONFIG.PITCH;
     const R = Renderer.REFEREE;
-    const t = Renderer.tunnel();
     return {
-      x: t ? t.x + t.width / 2 + R.besideTunnel : P.left + P.width * R.alongPitch,
+      x: P.left + P.width * R.alongPitch,
       y: P.top - R.offLine - R.radius,
     };
   },
@@ -3054,12 +3039,18 @@ const Renderer = {
    * the bar is a thing you set rather than a thing you step through: the key does the
    * stepping for anybody who would rather not aim at a nine pixel square.
    */
+  /* Where it starts, in the frame the game is actually being played in. */
+  volumeBarX() {
+    return CONFIG.CANVAS.width / 2 + Renderer.VOLUME_BAR.fromMiddle;
+  },
+
   volumeBar(scene, y, step, onPick) {
     const B = Renderer.VOLUME_BAR;
+    const x = Renderer.volumeBarX();
     const blocks = [];
     for (let i = 0; i < Sound.STEPS; i += 1) {
       const on = i < step;
-      const block = scene.add.image(B.x + i * (B.block + B.gap), y, 'px')
+      const block = scene.add.image(x + i * (B.block + B.gap), y, 'px')
         .setDisplaySize(B.block, on ? B.height : B.height * 0.55)
         .setTint(on ? Renderer.THEME.lagerYellow : Renderer.PALETTE.outline)
         .setDepth(Renderer.DEPTH.overlay)

@@ -1022,6 +1022,27 @@ const DrunkTests = (() => {
     });
 
     group('skin switching');
+    check('the game opens on classic, whatever it was left on', () => {
+      /*
+       * The skins are a laugh to be reached for rather than a wardrobe to be kept, so a
+       * run that ended in Sunday League does not start there. Nothing is written down,
+       * which is what leaves the next load nothing to read back.
+       */
+      const key = 'drunkfootball.skin';
+      const was = Renderer.activeSkin;
+      let stored = null;
+      try { window.localStorage.removeItem(key); } catch (err) { /* private browsing */ }
+      Renderer.applySkin('sunday');
+      try { stored = window.localStorage.getItem(key); } catch (err) { stored = null; }
+      Renderer.applySkin(was);
+      const opening = Renderer.SKINS.find((sk) => sk.key === Renderer.DEFAULT_SKIN);
+      return {
+        pass: stored === null && Renderer.DEFAULT_SKIN === 'classic' && !!opening,
+        detail: stored === null
+          ? 'it opens on ' + Renderer.DEFAULT_SKIN + ' and remembers nothing'
+          : 'sunday league was written down as ' + stored,
+      };
+    });
     /* Textures are baked from the palette, so swapping skins used to destroy textures that
      * sprites on screen were still holding, and the next render died on a null. */
     check('switching skins mid-match repaints without a dangling texture', () => {
@@ -2588,9 +2609,10 @@ const DrunkTests = (() => {
       // It lives between the label and the blurb, which is the one place on that screen
       // with no words in it. A wider label or an earlier blurb would sit under it.
       const B = Renderer.VOLUME_BAR;
+      const barX = Renderer.volumeBarX();
       const bar = {
-        left: B.x - B.block / 2,
-        right: B.x + (Sound.STEPS - 1) * (B.block + B.gap) + B.block / 2,
+        left: barX - B.block / 2,
+        right: barX + (Sound.STEPS - 1) * (B.block + B.gap) + B.block / 2,
         top: -B.height / 2,
         bottom: B.height / 2,
       };
@@ -2722,18 +2744,25 @@ const DrunkTests = (() => {
           + ', in a stand that runs ' + near.rail + ' to ' + near.back : 'no tunnel',
       };
     });
-    check('it comes out through a block of seating, not past the end of one', () => {
-      // The look is a stand parted by a tunnel. A tunnel beyond the last seat is just a
-      // gap between two stands.
+    check('it comes out on the halfway line, in the gap between the blocks', () => {
+      /*
+       * Where a tunnel belongs, and the one stretch of that stand with nothing in it: the
+       * seating already parts there to leave the score and the clock a clear run. So the
+       * mouth is on the centre line and it costs nobody their seat.
+       */
+      const P = CONFIG.PITCH;
       const S = Renderer.STADIUMS.find((st) => st.key === 'large');
       const near = Renderer.standRows(S)[0];
       const t = Renderer.tunnel(S);
-      const block = near.bands.findIndex((band) => t.x > band[0] && t.x < band[1]);
+      const offCentre = Math.abs(t.x - P.centreX);
+      const inABlock = near.bands.some((band) => t.x + t.width / 2 > band[0]
+        && t.x - t.width / 2 < band[1]);
       return {
-        pass: block !== -1,
-        detail: block === -1 ? 'at ' + Math.round(t.x) + ', outside every block'
-          : 'through block ' + block + ', which runs ' + Math.round(near.bands[block][0])
-            + ' to ' + Math.round(near.bands[block][1]),
+        pass: offCentre < 0.5 && !inABlock,
+        detail: inABlock ? 'cut through a block of seats'
+          : Math.round(offCentre) + 'px off the centre line, between blocks that stop at '
+            + Math.round(near.bands[0][1]) + ' and start again at '
+            + Math.round(near.bands[1][0]),
       };
     });
     check('nothing is drawn across the mouth', () => {
@@ -2800,24 +2829,20 @@ const DrunkTests = (() => {
             : 'the mouth is clear',
       };
     });
-    check('the referee waits at the mouth, and not in it', () => {
+    check('the referee stands on the touchline, well clear of the mouth', () => {
+      // He is not part of the ceremony: he stands on the line and blows it. Two of them
+      // coming out at once would walk straight through him if he waited in the doorway.
       const g = startMatch('two');
       const t = Renderer.tunnel();
       const box = t ? tunnelBox(t) : null;
       const b = boundsOf(g.referee);
-      const gap = t ? b.left - box.right : 0;
+      const gap = t ? box.left - b.right : 0;
       return {
-        pass: !!t && !overlaps(b, box, 0) && gap > 0 && gap < 60,
+        pass: !!t && !overlaps(b, box, 0) && gap > CONFIG.PLAYER.radius,
         detail: !t ? 'no tunnel on this ground'
           : overlaps(b, box, 0) ? 'stood in the mouth'
-            : Math.round(gap) + 'px to the side of it',
+            : Math.round(gap) + 'px along the line from it',
       };
-    });
-    check('the mouth is clear of everything the HUD writes', () => {
-      const g = startMatch('bot');
-      const box = tunnelBox(Renderer.tunnel());
-      const clashes = textsOf(g).filter((t) => overlaps(boundsOf(t), box, 0)).map((t) => t.text);
-      return { pass: clashes.length === 0, detail: clashes.join(', ') || 'clear of the lot' };
     });
     check('the teams walk out of it before the first kickoff', () => {
       const g = startMatchSlowly('two');

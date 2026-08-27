@@ -70,9 +70,11 @@
 
       /*
        * tests.html?wide boots the world a touch device gets: wider, with the pitch in the
-       * middle and a gutter each side. This runs before boot rather than after, because
-       * the frame is decided once when the canvas is built. Everything in the suite has to
-       * pass in both frames, which is what stops a coordinate being written down.
+       * middle and a gutter each side. The game reads that off the address itself, because
+       * anything set from here arrives after the canvas has been sized. This only puts the
+       * setting where the frame already is, so the settings screen agrees with the world.
+       * Everything in the suite has to pass in both frames, which is what stops a
+       * coordinate being written down.
        */
       if (window.location.search.indexOf('wide') !== -1) AIM.touch = 'on';
 
