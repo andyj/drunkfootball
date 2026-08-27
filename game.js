@@ -16,6 +16,17 @@ const CONFIG = {
 
   CANVAS: { width: 1280, height: 720 },
 
+  /*
+   * Thumb controls need somewhere to live that is not the pitch. There is nowhere: the
+   * margin either side is 80px and a stick worth using is well over twice that. So on a
+   * touch device the world gets wider, a gutter each side, and the pitch is left exactly
+   * the size it always was and moved to the middle of it.
+   *
+   * Only the frame changes. PITCH.width and PITCH.height are untouched, so every distance
+   * a ball travels and every angle a shot needs is the same game either way.
+   */
+  FRAME: { gutter: 210, wide: false },
+
   PITCH: {
     left: 80,
     right: 1200,
@@ -268,8 +279,57 @@ const CONFIG = {
   },
 };
 
-/* Derived geometry, so the numbers above stay the only things worth editing. */
-(function deriveGeometry() {
+/*
+ * What the keys were before anybody changed them, kept whole so RESET has something to
+ * reset to. Copied rather than referenced, because CONFIG.CONTROLS is what gets rebound.
+ */
+const DEFAULT_CONTROLS = JSON.parse(JSON.stringify(CONFIG.CONTROLS));
+
+/* The six things a player can ask for, in the order the rebinding screen lists them. */
+const ACTIONS = [
+  { key: 'up', name: 'Up' },
+  { key: 'down', name: 'Down' },
+  { key: 'left', name: 'Left' },
+  { key: 'right', name: 'Right' },
+  { key: 'pass', name: 'Pass' },
+  { key: 'shoot', name: 'Shoot' },
+];
+
+/*
+ * Keys the match itself answers to, so binding a player to one would pause the game every
+ * time they tried to run. R, S and Q are deliberately not here: they only mean anything
+ * while the pause menu is up, and nobody is running about at the time.
+ */
+const RESERVED_KEYS = { ESC: 'pauses', P: 'pauses', M: 'switches the mouse scheme' };
+
+/*
+ * A browser keydown carries a code; Phaser wants a name. Reversing its own table keeps
+ * both sides speaking the same vocabulary, so whatever is stored can be handed straight
+ * back to addKeys.
+ */
+function keyNameFor(keyCode) {
+  const codes = Phaser.Input.Keyboard.KeyCodes;
+  return Object.keys(codes).find((name) => codes[name] === keyCode) || null;
+}
+
+/* Whoever already answers to this key, if anyone does. */
+function boundTo(name) {
+  let found = null;
+  Object.keys(CONFIG.CONTROLS).forEach((team) => {
+    ACTIONS.forEach((action) => {
+      if (!found && CONFIG.CONTROLS[team][action.key] === name) found = { team, action };
+    });
+  });
+  return found;
+}
+
+/*
+ * Derived geometry, so the numbers above stay the only things worth editing.
+ *
+ * Called rather than run on the spot, because whether the world is the wide one depends on
+ * a saved preference, and preferences are not loaded yet when this file is read.
+ */
+function deriveGeometry() {
   const P = CONFIG.PITCH;
   P.width = P.right - P.left;
   P.height = P.bottom - P.top;
@@ -293,7 +353,22 @@ const CONFIG = {
     centre: G.spotY,
     bottom: G.mouthBottom - G.mouthHeight / 6,
   };
-}());
+}
+
+/*
+ * Widen the world and slide the pitch into the middle of it. Everything else on every
+ * screen is either centred on the canvas or measured from the pitch, so both follow.
+ */
+function useWideFrame() {
+  const F = CONFIG.FRAME;
+  if (F.wide) return;
+  F.wide = true;
+  CONFIG.CANVAS.width += F.gutter * 2;
+  CONFIG.PITCH.left += F.gutter;
+  CONFIG.PITCH.right += F.gutter;
+}
+
+deriveGeometry();
 
 /* ==========================================================================
  * Shared helpers
@@ -402,7 +477,25 @@ function loadPrefs() {
     } catch (err) { saved = null; }
     if (saved && typeof saved.redUsesMouse === 'boolean') AIM.redUsesMouse = saved.redUsesMouse;
     if (saved && TOUCH_MODES.indexOf(saved.touch) !== -1) AIM.touch = saved.touch;
+    if (saved && saved.controls) applySavedControls(saved.controls);
   }
+}
+
+/*
+ * Every binding is checked against Phaser's own key table on the way in. Storage can hold
+ * anything, including the leftovers of an older version of this game, and a control map
+ * with a key nobody can press is a match you cannot move in.
+ */
+function applySavedControls(saved) {
+  Object.keys(DEFAULT_CONTROLS).forEach((team) => {
+    if (!saved[team]) return;
+    ACTIONS.forEach((action) => {
+      const name = saved[team][action.key];
+      if (typeof name === 'string' && Phaser.Input.Keyboard.KeyCodes[name] !== undefined) {
+        CONFIG.CONTROLS[team][action.key] = name;
+      }
+    });
+  });
 }
 
 function savePrefs() {
@@ -410,6 +503,7 @@ function savePrefs() {
     window.localStorage.setItem(PREFS_KEY, JSON.stringify({
       redUsesMouse: AIM.redUsesMouse,
       touch: AIM.touch,
+      controls: CONFIG.CONTROLS,
     }));
   } catch (err) { /* nothing worth doing */ }
 }
@@ -523,6 +617,8 @@ class SettingsScene extends Phaser.Scene {
       skin: (key) => chooseSkin(this, key),
       mouse: () => this.toggleMouse(),
       touch: () => this.cycleTouch(),
+      stadium: () => this.cycleStadium(),
+      keys: () => this.scene.start('Keys', { returnTo: this.returnTo }),
       legacy: () => { window.location.href = LEGACY_URL; },
     });
     // One key per skin, however many there are, so the numbers on screen and the numbers
@@ -530,7 +626,7 @@ class SettingsScene extends Phaser.Scene {
     this.skinCount = Math.min(Renderer.SKINS.length, DIGIT_KEYS.length);
     const bindings = [];
     for (let i = 0; i < this.skinCount; i++) bindings.push(DIGIT_KEYS[i], NUMPAD_KEYS[i]);
-    this.keys = this.input.keyboard.addKeys(bindings.concat(['M', 'T', 'L']).join(','));
+    this.keys = this.input.keyboard.addKeys(bindings.concat(['M', 'T', 'G', 'K', 'L']).join(','));
     this.backKey = this.input.keyboard.addKey('ESC');
   }
 
@@ -563,6 +659,28 @@ class SettingsScene extends Phaser.Scene {
     const next = (TOUCH_MODES.indexOf(AIM.touch) + 1) % TOUCH_MODES.length;
     AIM.touch = TOUCH_MODES[next];
     savePrefs();
+
+    /*
+     * Thumb controls come with a wider world, and a canvas cannot be resized once the game
+     * is running. So when the answer actually changes, start the page again rather than
+     * leave a setting that claims to be on and plainly is not.
+     */
+    if (touchWanted() !== CONFIG.FRAME.wide) {
+      this.restartForFrame();
+      return;
+    }
+    this.refresh();
+  }
+
+  /* Its own method so the suite can cycle the setting without taking the page with it. */
+  restartForFrame() {
+    window.location.reload();
+  }
+
+  /* Four answers here: random, and each of the three grounds pinned. */
+  cycleStadium() {
+    const list = Renderer.STADIUM_CHOICES;
+    Renderer.saveStadium(list[(list.indexOf(Renderer.stadiumChoice) + 1) % list.length]);
     this.refresh();
   }
 
@@ -582,6 +700,14 @@ class SettingsScene extends Phaser.Scene {
       this.cycleTouch();
       return;
     }
+    if (JustDown(this.keys.G)) {
+      this.cycleStadium();
+      return;
+    }
+    if (JustDown(this.keys.K)) {
+      this.scene.start('Keys', { returnTo: this.returnTo });
+      return;
+    }
     if (JustDown(this.keys.L)) {
       window.location.href = LEGACY_URL;
       return;
@@ -594,6 +720,128 @@ class SettingsScene extends Phaser.Scene {
         return;
       }
     }
+  }
+}
+
+/* ==========================================================================
+ * KeysScene — change what everybody presses
+ * ======================================================================= */
+
+class KeysScene extends Phaser.Scene {
+  constructor() { super('Keys'); }
+
+  /* Carried through, so leaving lands wherever settings would have landed. */
+  init(data) {
+    this.returnTo = (data && data.returnTo) || null;
+    // Carried through the restart that redraws this screen, or asking for a key would
+    // forget it had asked the moment it repainted.
+    this.capturing = (data && data.capturing) || null;
+    this.message = (data && data.message) || '';
+  }
+
+  create() {
+    Renderer.beginScene(this);
+    Renderer.createKeysScreen(this, {
+      actions: ACTIONS,
+      capturing: this.capturing,
+      message: this.message,
+    }, {
+      rebind: (team, action) => this.beginCapture(team, action),
+      reset: () => this.resetAll(),
+    });
+
+    this.sceneKeys = this.input.keyboard.addKeys('ESC,R');
+
+    /*
+     * Every key press on this screen is a candidate binding, so they are read raw rather
+     * than through bound Key objects. Nothing else here listens while a capture is open.
+     */
+    const onKey = (event) => this.captured(event);
+    this.input.keyboard.on('keydown', onKey);
+    this.events.once('shutdown', () => this.input.keyboard.off('keydown', onKey));
+  }
+
+  beginCapture(team, action) {
+    this.capturing = { team, action };
+    this.message = '';
+    this.redraw();
+  }
+
+  captured(event) {
+    if (!this.capturing) return;
+    event.preventDefault();
+
+    const name = keyNameFor(event.keyCode);
+    const { team, action } = this.capturing;
+
+    // Escape backs out of the capture rather than out of the screen: leaving mid-question
+    // with nothing bound would be the surprising thing.
+    if (name === 'ESC') {
+      this.capturing = null;
+      this.message = 'left ' + Renderer.TEAM_NAME[team] + ' ' + action.name + ' alone';
+      this.redraw();
+      return;
+    }
+
+    if (!name) {
+      this.message = 'that key has no name the game knows';
+      this.redraw();
+      return;
+    }
+    if (RESERVED_KEYS[name]) {
+      this.message = Renderer.keyLabel(name) + ' already ' + RESERVED_KEYS[name];
+      this.redraw();
+      return;
+    }
+
+    const taken = boundTo(name);
+    if (taken && !(taken.team === team && taken.action.key === action.key)) {
+      this.message = Renderer.keyLabel(name) + ' is already '
+        + Renderer.TEAM_NAME[taken.team] + ' ' + taken.action.name.toLowerCase();
+      this.redraw();
+      return;
+    }
+
+    CONFIG.CONTROLS[team][action.key] = name;
+    savePrefs();
+    this.capturing = null;
+    this.message = Renderer.TEAM_NAME[team] + ' ' + action.name.toLowerCase() + ' is now '
+      + Renderer.keyLabel(name);
+    this.redraw();
+  }
+
+  resetAll() {
+    Object.keys(DEFAULT_CONTROLS).forEach((team) => {
+      ACTIONS.forEach((a) => { CONFIG.CONTROLS[team][a.key] = DEFAULT_CONTROLS[team][a.key]; });
+    });
+    savePrefs();
+    this.capturing = null;
+    this.message = 'back to the keys it came with';
+    this.redraw();
+  }
+
+  /* The screen is drawn from the bindings, so changing one means drawing it again. */
+  redraw() {
+    this.scene.restart({
+      returnTo: this.returnTo,
+      capturing: this.capturing,
+      message: this.message,
+    });
+  }
+
+  /*
+   * Back to settings, which is where this was reached from, and settings knows whether
+   * there is a paused match behind it to go back to after that.
+   */
+  leave() {
+    this.scene.start('Settings', { returnTo: this.returnTo });
+  }
+
+  update() {
+    if (this.capturing) return;   // every key belongs to the capture while one is open
+    const JustDown = Phaser.Input.Keyboard.JustDown;
+    if (JustDown(this.sceneKeys.ESC)) this.leave();
+    else if (JustDown(this.sceneKeys.R)) this.resetAll();
   }
 }
 
@@ -742,6 +990,10 @@ class GameScene extends Phaser.Scene {
 
     this.keys = { red: keysFor(this, 'red'), blue: keysFor(this, 'blue') };
     this.systemKeys = this.input.keyboard.addKeys('P,ESC,M,R,S,Q');
+
+    // The keys can be changed from settings while this match sits paused underneath, so
+    // they are read again on the way back in rather than only once at kick off.
+    this.events.on('resume', () => this.rebindKeys());
 
     // Without this the browser's own menu swallows every right click.
     this.input.mouse.disableContextMenu();
@@ -1458,6 +1710,11 @@ class GameScene extends Phaser.Scene {
     if (this.touch) this.touch.queuedKick = null;
   }
 
+  rebindKeys() {
+    this.keys = { red: keysFor(this, 'red'), blue: keysFor(this, 'blue') };
+    Renderer.updateControlHint(this.hud, this.redUsesMouse());
+  }
+
   /*
    * Settings runs on top of the match rather than replacing it, so the game is still there
    * to come back to. This scene is properly paused first, not merely logically: otherwise
@@ -1755,6 +2012,7 @@ class FullTimeScene extends Phaser.Scene {
 
 /* Before the game exists, so the first pitch and the first menu are already yours. */
 Renderer.loadSkin();
+Renderer.loadStadium();
 loadPrefs();
 
 /*
@@ -1775,9 +2033,18 @@ function whenFontReady() {
 
 function boot() {
 /*
+ * Decided once, here, because the canvas cannot be resized afterwards. Changing the
+ * setting later therefore reloads the page rather than pretending to take effect.
+ */
+if (touchWanted()) {
+  useWideFrame();
+  deriveGeometry();
+}
+
+/*
  * The canvas is built at a multiple of the game's own size and every camera zooms to
  * match, so the picture is drawn near the display's real resolution while game
- * coordinates stay 1280x720 throughout.
+ * coordinates stay the world's own throughout.
  */
 const renderScale = Renderer.chooseRenderScale();
 
@@ -1796,7 +2063,7 @@ window.game = new Phaser.Game({
     default: 'arcade',
     arcade: { gravity: { x: 0, y: 0 }, debug: false },
   },
-  scene: [MenuScene, PlayScene, SettingsScene, DifficultyScene, PenaltyModeScene,
+  scene: [MenuScene, PlayScene, SettingsScene, KeysScene, DifficultyScene, PenaltyModeScene,
     GameScene, PenaltyScene, FullTimeScene],
 });
 }

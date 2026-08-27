@@ -67,6 +67,14 @@
       var visual = window.location.search.indexOf('visual') !== -1;
       if (visual) document.body.classList.add('visual');
 
+      /*
+       * tests.html?wide boots the world a touch device gets: wider, with the pitch in the
+       * middle and a gutter each side. This runs before boot rather than after, because
+       * the frame is decided once when the canvas is built. Everything in the suite has to
+       * pass in both frames, which is what stops a coordinate being written down.
+       */
+      if (window.location.search.indexOf('wide') !== -1) AIM.touch = 'on';
+
       function render(summary) {
         tally.innerHTML = summary.failed === 0
           ? '<span class="ok">' + summary.passed + ' of ' + summary.total + ' passed</span>'

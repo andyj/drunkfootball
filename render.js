@@ -87,6 +87,76 @@ const Renderer = {
    * the middle, which is where the pause hint and the clock live: a supporter standing on
    * the HUD would look like a bug rather than a joke.
    */
+  /*
+   * Floodlights, for the skin that is named after them. Four pylons in the corners of the
+   * ground, each throwing a pool across the pitch, and everybody on it casting a shadow
+   * away from every one of them. That last part is the whole effect: one shadow reads as a
+   * drop shadow, four fanning out reads as being under lights.
+   *
+   * The pools are added rather than painted over, so where two overlap the grass gets
+   * brighter, and the middle of the pitch ends up the best lit part of it exactly as it
+   * would under four real towers.
+   */
+  FLOODLIGHTS: {
+    poolRadius: 640,
+    poolAlpha: 0.42,
+    warm: 0xfff0c4,
+    /* The pitch is taken down before any of it is lit back up. */
+    darken: 0.44,
+    /*
+     * Seen from above a floodlight is a bank of lamps, not a mast, so that is all each one
+     * is. Tucked into the corner, and close enough to the touchline to clear the control
+     * legend along the very top of the surround, which is the only other thing up here.
+     */
+    pylonInsetX: 42,
+    pylonInsetY: 12,
+    headWidth: 34,
+    headHeight: 15,
+    glowRadius: 34,
+    lamps: 6,
+    shadow: {
+      // Far enough out that four of them read as four, rather than as one dark halo.
+      offset: 27,
+      alpha: 0.32,
+      scale: 1.2,
+    },
+  },
+
+  /*
+   * Three grounds to play in. Purely what surrounds the pitch: not one number here reaches
+   * the playing area, so a big ground and a small one are the same match with a different
+   * turnout watching it.
+   *
+   * The surround is 60px and that is all there is, so the sizes differ by how many rows
+   * deep the crowd stands, how many of them there are, and whether there is a terrace
+   * behind them or just a rail and some grass.
+   */
+  STADIUMS: [
+    {
+      key: 'small', name: 'SMALL',
+      blurb: 'a rail, a dog, and whoever wandered over',
+      rows: 1, people: [12, 20], terrace: 0,
+    },
+    {
+      key: 'medium', name: 'MEDIUM',
+      blurb: 'two rows deep and a proper Saturday',
+      rows: 2, people: [42, 58], terrace: 0,
+    },
+    {
+      key: 'large', name: 'LARGE',
+      blurb: 'terraced, packed, and louder than the game deserves',
+      // Packed tighter than the others, because three rows have to fit in the same 60px
+      // of surround that one row has all to itself in a small ground.
+      rows: 3, people: [78, 96], terrace: 3, standOff: 12, rowGap: 12,
+    },
+  ],
+
+  STADIUM_STORAGE_KEY: 'drunkfootball.stadium',
+  /* 'random' rolls a fresh one every match. The other three pin it. */
+  stadiumChoice: 'random',
+  /* What the match being played is actually in, rolled once when its pitch is drawn. */
+  currentStadium: null,
+
   CROWD: {
     fence: 0x4a5058,
     railInset: 12,          // how far outside the touchline the rail sits
@@ -94,8 +164,6 @@ const Renderer = {
     postHalfHeight: 5,
     figureRadius: 8,
     standOff: 16,           // gap between the rail and the front row
-    minPeople: 45,
-    maxPeople: 60,          // rolled fresh for every match, nobody counts them
     /*
      * The stretches of surround with nothing else in them. The top bands are the
      * narrower pair because the score, both control lines and the shootout title all
@@ -103,10 +171,28 @@ const Renderer = {
      * The top gap is sized against the widest thing that sits in it, the shootout
      * title, with room left over for jitterX and a figure's radius.
      */
+    /*
+     * Where there is room to stand, as fractions of the pitch width rather than pixels: the
+     * wide frame slides the pitch sideways, and a crowd written down in absolute
+     * coordinates walked out from under it and stood on the score.
+     *
+     * The gaps are measured off the HUD at its widest, not guessed. Along the top that is
+     * the control legend out to 0.185, the score and clock between 0.470 and 0.530, and
+     * the bot or blue legend from 0.887. Along the bottom it is the pause hint, 0.404 to
+     * 0.596, which is also where the pause button sits. Everything here keeps 0.02 clear
+     * of those, which is a shade more than a supporter's own width.
+     */
     bands: {
-      top: [[320, 425], [855, 1030]],
-      bottom: [[140, 505], [775, 1140]],
+      top: [[0.205, 0.450], [0.550, 0.867]],
+      bottom: [[0.054, 0.384], [0.616, 0.946]],
     },
+    rowGap: 15,             // how much deeper each row stands, away from the touchline
+    /*
+     * Each row back is drawn a little smaller. Depth, mostly, but it is also what lets a
+     * third row fit at all: at full size the back row of a packed terrace hangs off the
+     * top of the screen.
+     */
+    rowScale: 0.86,
     jitterX: 5,
     jitterY: 4,
     jackets: [0x3b4a5a, 0x5a4634, 0x2f3b2f, 0x4a3a4a, 0x63513a, 0x40506b],
@@ -116,35 +202,30 @@ const Renderer = {
   },
 
   /*
-   * Thumb controls. Laid out in game coordinates like everything else, so they scale with
-   * the pitch rather than with the device, and drawn in the bottom corners where thumbs
-   * already are when a phone is held sideways.
+   * Thumb controls, in the gutters the wide frame exists to provide. Nothing sits on the
+   * pitch: the stick has a column of its own down the left, the buttons have one down the
+   * right, and the ball is never behind a thumb.
    *
-   * They have to sit over the pitch: 1280x720 is all there is, and the 60px surround is
-   * far too thin for a thumb. So they are translucent, and the ball reads straight
-   * through them. Nothing here reaches game.js, which is told only a stick direction as a
-   * fraction of full travel.
+   * Sizes are the design ones and positions are worked out from the frame rather than
+   * written down, so the gutter width is the only number to change.
    */
   TOUCH: {
     textureSize: 256,
     ringWidth: 12,
 
-    stick: { x: 178, y: 540, baseRadius: 84, nubRadius: 38, travel: 62 },
-    /*
-     * A thumb landing anywhere in here picks the stick up and re-centres it there, because
-     * no two hands hold a phone the same way and a fixed stick suits exactly one of them.
-     * Kept well clear of the buttons and the pause pill so a pointer can never be claimed
-     * by two things at once.
-     */
-    stickZone: { left: 0, top: 280, right: 520, bottom: 720 },
+    stickBaseRadius: 95,
+    stickNubRadius: 44,
+    stickTravel: 68,
+    stickClear: 6,        // breathing room, so nothing ever lands exactly on the touchline
+    stickY: 455,          // where a thumb sits with a phone held sideways, not the middle
 
     buttons: [
-      { key: 'pass', x: 1010, y: 528, radius: 52, label: 'PASS', size: 19 },
-      { key: 'shoot', x: 1140, y: 592, radius: 60, label: 'SHOOT', size: 21 },
+      { key: 'pass', y: 355, radius: 58, label: 'PASS', size: 19 },
+      { key: 'shoot', y: 520, radius: 66, label: 'SHOOT', size: 22 },
     ],
-    /* Where the pause hint already told you to look, now something to actually press. */
-    pause: { x: 640, y: 688, width: 168, height: 46, edgeWidth: 3, label: 'PAUSE', size: 20 },
+    pause: { y: 688, width: 168, height: 46, edgeWidth: 3, label: 'PAUSE', size: 20 },
 
+    gutterTint: 0.06,     // how far the control columns are lifted off the surround
     restAlpha: 0.34,
     liveAlpha: 0.52,
     pressMs: 140,
@@ -208,6 +289,8 @@ const Renderer = {
     kickoffCountdown: { on: true, size: 92 },
     penaltyDrama: { on: true },
     fullTimeConfetti: { on: true, pieces: 90 },
+    /* Towers, pools and four shadows each, on the one skin that asks for them. */
+    floodlights: { on: true },
   },
 
   DEPTH: {
@@ -228,16 +311,6 @@ const Renderer = {
    */
   SKINS: [
     {
-      key: 'sixpints',
-      name: 'SIX PINTS DEEP',
-      blurb: 'floodlit cage at 11pm, and it knows it is funny',
-      colours: {
-        pitchGreen: 0x2f8f46, stripe: 0x28803c, chalkWhite: 0xf5f2e6,
-        redTeam: 0xe5383b, blueTeam: 0x3a86ff,
-        lagerYellow: 0xffc53d, nightBlack: 0x12161c,
-      },
-    },
-    {
       key: 'classic',
       name: 'CLASSIC',
       blurb: 'red and blue, dry summer pitch',
@@ -248,13 +321,27 @@ const Renderer = {
       },
     },
     {
+      key: 'sixpints',
+      name: 'SIX PINTS DEEP',
+      blurb: 'floodlit cage at 11pm, and it knows it is funny',
+      colours: {
+        pitchGreen: 0x2f8f46, stripe: 0x28803c, chalkWhite: 0xf5f2e6,
+        redTeam: 0xe5383b, blueTeam: 0x3a86ff,
+        lagerYellow: 0xffc53d, nightBlack: 0x12161c,
+      },
+    },
+    {
       key: 'floodlit',
       name: 'FLOODLIT',
-      blurb: 'deep green under the lights, kits turned up',
+      blurb: 'four towers, four shadows, and a very dark night',
+      /* The only skin that gets the towers. Everything else is played in daylight. */
+      lights: true,
+      // Darker than any other ground, because the pools are about to put the light back
+      // where the towers point and nowhere else.
       colours: {
-        pitchGreen: 0x1f5c31, stripe: 0x246a38, chalkWhite: 0xffffff,
+        pitchGreen: 0x123a1f, stripe: 0x164426, chalkWhite: 0xffffff,
         redTeam: 0xff5a5a, blueTeam: 0x5aa0ff,
-        lagerYellow: 0xffd166, nightBlack: 0x11161f,
+        lagerYellow: 0xffd166, nightBlack: 0x080b11,
       },
     },
     {
@@ -271,7 +358,6 @@ const Renderer = {
       key: 'sunday',
       name: 'SUNDAY LEAGUE',
       blurb: 'mud, a rail, and a dozen unsteady witnesses',
-      crowd: true,
       colours: {
         pitchGreen: 0x5a6b3a, stripe: 0x63753f, chalkWhite: 0xd8d2c0,
         redTeam: 0xe86a17, blueTeam: 0x7a3fbf,
@@ -281,7 +367,13 @@ const Renderer = {
   ],
 
   SKIN_STORAGE_KEY: 'drunkfootball.skin',
-  activeSkin: 'classic',
+  /*
+   * Named rather than taken from the top of the list. The order of SKINS is what the
+   * settings screen shows and which number picks which, and reordering it must not quietly
+   * change what a new player starts on.
+   */
+  DEFAULT_SKIN: 'sixpints',
+  activeSkin: 'sixpints',
 
   /* Every bot is equally drunk, so none of these promise a steadier opponent. */
   DIFFICULTY_BLURB: {
@@ -414,7 +506,7 @@ const Renderer = {
     try {
       saved = window.localStorage.getItem(Renderer.SKIN_STORAGE_KEY);
     } catch (err) { saved = null; }
-    Renderer.applySkin(saved || Renderer.SKINS[0].key);
+    Renderer.applySkin(saved || Renderer.DEFAULT_SKIN);
   },
 
   /*
@@ -523,6 +615,21 @@ const Renderer = {
       g.closePath();
       g.fillPath();
     });
+
+    /*
+     * A soft round falloff, stacked from the outside in. Baked white so one texture serves
+     * both the light a tower throws and the shadow it casts, tinted and blended differently
+     * at each use.
+     */
+    const falloff = (key, size, rings, step) => bake(key, size, size, () => {
+      const r = size / 2;
+      for (let i = rings; i > 0; i -= 1) {
+        g.fillStyle(0xffffff, step);
+        g.fillCircle(r, r, (i / rings) * (r - 1));
+      }
+    });
+    falloff('light_pool', 256, 48, 0.02);
+    falloff('soft_shadow', 64, 14, 0.11);
 
     /*
      * The thumb controls, baked once at a size nothing asks to be drawn bigger than, so
@@ -794,6 +901,17 @@ const Renderer = {
     g.fillStyle(C.surround, 1);
     g.fillRect(0, 0, CONFIG.CANVAS.width, CONFIG.CANVAS.height);
 
+    /*
+     * In the wide frame the gutters are lifted a shade off the surround, so the columns
+     * the thumb controls live in read as part of the machine rather than as pitch that
+     * happens to be empty.
+     */
+    if (CONFIG.FRAME.wide) {
+      g.fillStyle(Renderer.lighten(Renderer.THEME.nightBlack, Renderer.TOUCH.gutterTint), 1);
+      g.fillRect(0, 0, P.left, CONFIG.CANVAS.height);
+      g.fillRect(P.right, 0, CONFIG.CANVAS.width - P.right, CONFIG.CANVAS.height);
+    }
+
     g.fillStyle(C.grass, 1);
     g.fillRect(P.left, P.top, P.width, P.height);
 
@@ -854,6 +972,9 @@ const Renderer = {
       g.lineBetween(P.right, y, P.right + P.goalDepth, y);
     });
 
+    // Last, so the night falls over a ground that is already fully drawn.
+    Renderer.createFloodlights(scene, g);
+
     return g;
   },
 
@@ -901,17 +1022,59 @@ const Renderer = {
     g.lineBetween(x1 + dx * t0, y1 + dy * t0, x1 + dx * t1, y1 + dy * t1);
   },
 
+  /* The ground this match is in. Rolled fresh each time unless a size has been pinned. */
+  rollStadium() {
+    const pinned = Renderer.STADIUMS.find((s) => s.key === Renderer.stadiumChoice);
+    Renderer.currentStadium = pinned || Phaser.Utils.Array.GetRandom(Renderer.STADIUMS);
+    return Renderer.currentStadium;
+  },
+
+  saveStadium(choice) {
+    Renderer.stadiumChoice = choice;
+    try {
+      window.localStorage.setItem(Renderer.STADIUM_STORAGE_KEY, choice);
+    } catch (err) { /* nothing worth doing */ }
+  },
+
+  loadStadium() {
+    let saved = null;
+    try {
+      saved = window.localStorage.getItem(Renderer.STADIUM_STORAGE_KEY);
+    } catch (err) { saved = null; }
+    Renderer.stadiumChoice = Renderer.STADIUM_CHOICES.indexOf(saved) === -1 ? 'random' : saved;
+  },
+
+  /* 'random' first, because it is the default and the interesting one. */
+  STADIUM_CHOICES: ['random', 'small', 'medium', 'large'],
+
   /*
-   * Rail and crowd, for skins that ask for them. The rail runs along both touchlines
-   * only: the goals stick out past the ends, so a rail all the way round would be drawn
-   * straight through the nets.
+   * Terrace, rail and crowd. The rail runs along both touchlines only: the goals stick out
+   * past the ends, so a rail all the way round would be drawn straight through the nets.
    */
   createGround(scene, g) {
-    const skin = Renderer.SKINS.find((s) => s.key === Renderer.activeSkin);
-    if (!skin || !skin.crowd) return;
-
     const P = CONFIG.PITCH;
     const K = Renderer.CROWD;
+    const S = Renderer.rollStadium();
+
+    /*
+     * The terrace goes down first, so the rail and everyone on it stand in front of it.
+     * Steps rather than a flat block: a plain rectangle behind the crowd reads as a hole
+     * in the picture, three lines across it read as somewhere to stand.
+     */
+    if (S.terrace > 0) {
+      const back = Renderer.mix(Renderer.THEME.nightBlack, K.fence, 0.22);
+      const stepLine = Renderer.lighten(back, 0.10);
+      [[0, P.top - K.railInset], [P.bottom + K.railInset, CONFIG.CANVAS.height]]
+        .forEach(([from, to]) => {
+          g.fillStyle(back, 1).fillRect(P.left - K.railInset, from,
+            P.width + K.railInset * 2, to - from);
+          g.lineStyle(1, stepLine, 0.7);
+          for (let i = 1; i <= S.terrace; i += 1) {
+            const y = from + (to - from) * (i / (S.terrace + 1));
+            g.lineBetween(P.left - K.railInset, y, P.right + K.railInset, y);
+          }
+        });
+    }
 
     g.lineStyle(2, K.fence, 1);
     [P.top - K.railInset, P.bottom + K.railInset].forEach((y) => {
@@ -922,16 +1085,25 @@ const Renderer = {
     });
 
     /*
-     * A fresh turnout every match, spread down both touchlines. Each band gets a share of
-     * the total in proportion to how much room it has, so the crowd is the same density
-     * all the way round rather than packed at one end, and the last band takes whatever
-     * rounding left over so the total is exactly the number rolled.
+     * A fresh turnout every match, spread down both touchlines and back through as many
+     * rows as this ground has. Each band gets a share of the total in proportion to how
+     * much room it has, so the crowd is the same density all the way round rather than
+     * packed at one end, and the last band takes whatever rounding left over so the total
+     * is exactly the number rolled.
      */
-    const total = Phaser.Math.Between(K.minPeople, K.maxPeople);
-    const rows = [
-      { y: P.top - K.railInset - K.standOff, bands: K.bands.top },
-      { y: P.bottom + K.railInset + K.standOff, bands: K.bands.bottom },
-    ];
+    const total = Phaser.Math.Between(S.people[0], S.people[1]);
+    const across = (f) => P.left + f * P.width;
+    const rows = [];
+    const standOff = S.standOff || K.standOff;
+    const rowGap = S.rowGap || K.rowGap;
+    for (let i = 0; i < S.rows; i += 1) {
+      const back = standOff + i * rowGap;
+      const scale = Math.pow(K.rowScale, i);
+      rows.push({ y: P.top - K.railInset - back, scale,
+        bands: K.bands.top.map(([a, b]) => [across(a), across(b)]) });
+      rows.push({ y: P.bottom + K.railInset + back, scale,
+        bands: K.bands.bottom.map(([a, b]) => [across(a), across(b)]) });
+    }
     const roomAll = rows.reduce((sum, row) =>
       sum + row.bands.reduce((w, [from, to]) => w + (to - from), 0), 0);
 
@@ -954,6 +1126,7 @@ const Renderer = {
             row.y + Phaser.Math.Between(-K.jitterY, K.jitterY),
             'fan')
             .setTint(K.jackets[n % K.jackets.length])
+            .setScale(row.scale)
             .setDepth(Renderer.DEPTH.wall);
           n += 1;
 
@@ -968,6 +1141,119 @@ const Renderer = {
             ease: 'Sine.easeInOut',
           });
         }
+      });
+    });
+  },
+
+  /* Where the four towers stand: just outside each corner of the pitch. */
+  pylonPositions() {
+    const P = CONFIG.PITCH;
+    const F = Renderer.FLOODLIGHTS;
+    return [
+      { x: P.left - F.pylonInsetX, y: P.top - F.pylonInsetY, ax: -1, ay: -1 },
+      { x: P.right + F.pylonInsetX, y: P.top - F.pylonInsetY, ax: 1, ay: -1 },
+      { x: P.left - F.pylonInsetX, y: P.bottom + F.pylonInsetY, ax: -1, ay: 1 },
+      { x: P.right + F.pylonInsetX, y: P.bottom + F.pylonInsetY, ax: 1, ay: 1 },
+    ];
+  },
+
+  skinHasLights() {
+    const skin = Renderer.SKINS.find((s) => s.key === Renderer.activeSkin);
+    return !!(skin && skin.lights) && Renderer.JUICE.floodlights.on;
+  },
+
+  /*
+   * Night falls, then four towers light it back up. The darkening goes over the markings
+   * rather than under them, so the lines are dimmed with the grass instead of glowing
+   * through it, and the pools go over that.
+   */
+  createFloodlights(scene, g) {
+    if (!Renderer.skinHasLights()) return;
+    const P = CONFIG.PITCH;
+    const F = Renderer.FLOODLIGHTS;
+
+    g.fillStyle(Renderer.THEME.nightBlack, F.darken);
+    g.fillRect(0, 0, CONFIG.CANVAS.width, CONFIG.CANVAS.height);
+
+    Renderer.pylonPositions().forEach((pylon) => {
+      scene.add.image(pylon.x, pylon.y, 'light_pool')
+        .setDisplaySize(F.poolRadius * 2, F.poolRadius * 2)
+        .setTint(F.warm)
+        .setAlpha(F.poolAlpha)
+        .setBlendMode(Phaser.BlendModes.ADD)
+        .setDepth(Renderer.DEPTH.pitch + 1);
+
+      Renderer.drawPylon(scene, pylon);
+    });
+  },
+
+  /* A bank of lamps in a dark housing, with a haze around it so it reads as the source. */
+  drawPylon(scene, pylon) {
+    const F = Renderer.FLOODLIGHTS;
+    const w = F.headWidth;
+    const h = F.headHeight;
+
+    scene.add.image(pylon.x, pylon.y, 'light_pool')
+      .setDisplaySize(F.glowRadius * 2, F.glowRadius * 2)
+      .setTint(F.warm).setAlpha(0.5)
+      .setBlendMode(Phaser.BlendModes.ADD)
+      .setDepth(Renderer.DEPTH.wall);
+
+    const g = scene.add.graphics().setDepth(Renderer.DEPTH.wall + 1);
+    g.fillStyle(Renderer.mix(Renderer.THEME.nightBlack, 0xffffff, 0.24), 1);
+    g.fillRect(pylon.x - w / 2, pylon.y - h / 2, w, h);
+
+    const gap = w / F.lamps;
+    for (let i = 0; i < F.lamps; i += 1) {
+      g.fillStyle(F.warm, 0.95);
+      g.fillCircle(pylon.x - w / 2 + gap * (i + 0.5), pylon.y, 2.6);
+    }
+  },
+
+  /* Where a tower's housing actually inks, so the suite can check what it sits on. */
+  pylonBox(pylon) {
+    const F = Renderer.FLOODLIGHTS;
+    return {
+      left: pylon.x - F.headWidth / 2, right: pylon.x + F.headWidth / 2,
+      top: pylon.y - F.headHeight / 2, bottom: pylon.y + F.headHeight / 2,
+    };
+  },
+
+  /*
+   * One shadow per tower, thrown directly away from it. Made once and then only moved,
+   * because a match creates and destroys quite enough as it is.
+   */
+  makeShadows(scene, view) {
+    if (!Renderer.skinHasLights()) return null;
+    const F = Renderer.FLOODLIGHTS;
+    const pylons = Renderer.pylonPositions();
+    const casters = view.players.map((p) => ({ sprite: p.sprite, size: CONFIG.PLAYER.radius * 2 }))
+      .concat((view.keepers || []).map((k) => ({ sprite: k.sprite, size: CONFIG.KEEPER.width })))
+      .concat([{ sprite: view.ball, size: CONFIG.BALL.radius * 2 }]);
+
+    return casters.map((caster) => ({
+      caster,
+      blobs: pylons.map(() => scene.add.image(caster.sprite.x, caster.sprite.y, 'soft_shadow')
+        .setDisplaySize(caster.size * F.shadow.scale, caster.size * F.shadow.scale)
+        .setTint(Renderer.THEME.nightBlack)
+        .setAlpha(F.shadow.alpha)
+        .setDepth(Renderer.DEPTH.wall + 1)),
+      pylons,
+    }));
+  },
+
+  moveShadows(shadows) {
+    const F = Renderer.FLOODLIGHTS;
+    shadows.forEach((entry) => {
+      const s = entry.caster.sprite;
+      if (!s || !s.active) return;
+      entry.blobs.forEach((blob, i) => {
+        const pylon = entry.pylons[i];
+        const dx = s.x - pylon.x;
+        const dy = s.y - pylon.y;
+        const len = Math.sqrt(dx * dx + dy * dy) || 1;
+        blob.setPosition(s.x + (dx / len) * F.shadow.offset, s.y + (dy / len) * F.shadow.offset);
+        blob.setVisible(s.visible);
       });
     });
   },
@@ -1044,6 +1330,41 @@ const Renderer = {
   },
 
   /*
+   * Where each thumb control goes, worked out from the frame rather than written down.
+   *
+   * Both columns are the gutter the wide frame added, so the stick and the buttons are
+   * beside the pitch and never on it. In the narrow frame there is no gutter to speak of
+   * and this falls back to the margin: only the test harness ever sees that, because
+   * asking for thumb controls is what makes the frame wide in the first place.
+   */
+  touchLayout() {
+    const T = Renderer.TOUCH;
+    const W = CONFIG.CANVAS.width;
+    const left = CONFIG.PITCH.left;
+    const right = W - CONFIG.PITCH.right;
+
+    return {
+      stick: {
+        x: left / 2, y: T.stickY,
+        baseRadius: T.stickBaseRadius, nubRadius: T.stickNubRadius, travel: T.stickTravel,
+        /*
+         * How close the stick may be picked up to the edge of its column. Whichever reaches
+         * further, the ring or the nub pushed all the way out, and the nub usually wins:
+         * clamping to the ring alone let it cross the touchline on a hard push.
+         *
+         * Stated once, here, because the suite checks the same number.
+         */
+        margin: Math.max(T.stickBaseRadius, T.stickTravel + T.stickNubRadius) + T.stickClear,
+      },
+      // The whole column, so the stick can be picked up wherever a thumb happens to land.
+      // Stopping at the touchline is the point: a drag on the pitch must not move it there.
+      stickZone: { left: 0, top: 0, right: left, bottom: CONFIG.CANVAS.height },
+      buttons: T.buttons.map((b) => ({ ...b, x: W - right / 2 })),
+      pause: { ...T.pause, x: W / 2 },
+    };
+  },
+
+  /*
    * The thumb controls for a match. Like every other control scheme in the game, this one
    * only reports: the stick says which way it is being pushed as a fraction of its own
    * travel, the buttons say they were pressed, and the scene decides what any of it means.
@@ -1051,7 +1372,8 @@ const Renderer = {
    */
   createTouchControls(scene, handlers) {
     const T = Renderer.TOUCH;
-    const S = T.stick;
+    const L = Renderer.touchLayout();
+    const S = L.stick;
     const depth = Renderer.DEPTH.hud;
     const chalk = Renderer.THEME.chalkWhite;
 
@@ -1081,14 +1403,25 @@ const Renderer = {
       handlers.move(0, 0);
     };
 
-    const Z = T.stickZone;
+    const Z = L.stickZone;
+
+    /*
+     * The stick follows a thumb up and down its column but not sideways out of it: the
+     * gutter is barely wider than the ring, and anything hanging over the touchline is the
+     * whole thing this layout exists to avoid.
+     */
+    const margin = S.margin;
+    const grabAt = (x, y) => place(
+      Phaser.Math.Clamp(x, margin, Math.max(margin, Z.right - margin)),
+      Phaser.Math.Clamp(y, margin, CONFIG.CANVAS.height - margin));
+
     const zone = scene.add.zone((Z.left + Z.right) / 2, (Z.top + Z.bottom) / 2,
       Z.right - Z.left, Z.bottom - Z.top)
       .setInteractive()
       .on('pointerdown', (pointer) => {
         if (held !== null) return;
         held = pointer.id;
-        place(pointer.worldX, pointer.worldY);
+        grabAt(pointer.worldX, pointer.worldY);
         light(true);
       });
 
@@ -1110,7 +1443,7 @@ const Renderer = {
     const objects = [base, nub, zone];
     const buttons = {};
 
-    T.buttons.forEach((spec) => {
+    L.buttons.forEach((spec) => {
       const tint = spec.key === 'shoot' ? Renderer.THEME.lagerYellow : chalk;
       const face = disc(spec.x, spec.y, spec.radius, tint, T.restAlpha);
       const edge = ring(spec.x, spec.y, spec.radius, tint, T.liveAlpha);
@@ -1137,7 +1470,7 @@ const Renderer = {
      * would be, so it is drawn as an outline: an accent rectangle with the surround's own
      * colour laid back over the middle of it.
      */
-    const P = T.pause;
+    const P = L.pause;
     const edge = P.edgeWidth;
     const pill = scene.add.image(P.x, P.y, 'px')
       .setDisplaySize(P.width, P.height).setTint(Renderer.THEME.lagerYellow)
@@ -1224,21 +1557,16 @@ const Renderer = {
    * the display face, slammed in with an overshoot, tilted a few degrees off true, held,
    * then gone. Everything else on the pitch is deliberately quieter so that these land.
    *
-   * Colour carries the category. Yellow for the comic ones, red for a disaster, white for
-   * the merely wrong, so you can read what happened before you have read the words.
+   * Colour says who. The label belongs to whoever just made a mess of it, so it goes up in
+   * that player's colour and you know at a glance whose fumble it was without reading a
+   * word of it. Lightened, because a kit colour that reads on a player is not necessarily
+   * one that reads as text on grass.
    */
-  OUTCOME_TONE: {
-    whiff: 'comic',
-    backheel: 'comic',
-    wildSlice: 'disaster',
-    faceplant: 'disaster',
-  },
+  OUTCOME_LIGHTEN: 0.34,
 
-  outcomeColour(outcomeKey) {
-    const tone = Renderer.OUTCOME_TONE[outcomeKey];
-    if (tone === 'comic') return Renderer.CSS.accent;
-    if (tone === 'disaster') return Renderer.hex(Renderer.lighten(Renderer.THEME.redTeam, 0.25));
-    return Renderer.CSS.hud;
+  outcomeColour(team) {
+    const base = team === 'blue' ? Renderer.THEME.blueTeam : Renderer.THEME.redTeam;
+    return Renderer.hex(Renderer.lighten(base, Renderer.OUTCOME_LIGHTEN));
   },
 
   onOutcome(scene, player, outcomeKey) {
@@ -1249,7 +1577,7 @@ const Renderer = {
     if (!J.on) return;
 
     const label = Renderer.display(scene, player.sprite.x, player.sprite.y - 44, str,
-      J.size, Renderer.outcomeColour(outcomeKey))
+      J.size, Renderer.outcomeColour(player.team))
       .setOrigin(0.5)
       .setDepth(Renderer.DEPTH.label)
       .setAngle(Phaser.Math.Between(-J.tiltDeg, J.tiltDeg))
@@ -1617,6 +1945,7 @@ const Renderer = {
    */
   ownerRing(scene) {
     if (!scene.juiceState) scene.juiceState = { nextTrailAt: 0 };
+
     if (!scene.juiceState.ring) {
       scene.juiceState.ring = scene.add.image(0, 0, 'owner_ring')
         .setTint(Renderer.THEME.lagerYellow)
@@ -1690,6 +2019,15 @@ const Renderer = {
     if (!view.ball || !view.ball.body) return;
 
     if (!scene.juiceState) scene.juiceState = { nextTrailAt: 0 };
+    /*
+     * Made on the first tick rather than when the match is built, so the whole of this
+     * lives here and game.js never has to know a floodlit ground is any different. Cleared
+     * with the rest of juiceState when a scene restarts.
+     */
+    if (scene.juiceState.shadows === undefined) {
+      scene.juiceState.shadows = Renderer.makeShadows(scene, view);
+    }
+    if (scene.juiceState.shadows) Renderer.moveShadows(scene.juiceState.shadows);
 
     if (J.drunkSway.on) {
       const amplitude = Phaser.Math.DegToRad(J.drunkSway.degrees);
@@ -1887,10 +2225,18 @@ const Renderer = {
     Renderer.text(scene, cx - 10, 474, Renderer.TOUCH_BLURB[state.touch], 14, C.dim)
       .setOrigin(0, 0.5).setDepth(Renderer.DEPTH.overlay);
 
-    // The keys themselves, read straight out of CONFIG.CONTROLS so a remap can never
-    // leave this screen telling you something the game no longer does. Four rows, and the
-    // last of them has to finish inside the green band above the legacy button.
-    Renderer.keyTable(scene, nameX, 504, 25, nameX + 230, nameX + 410, 20);
+    Renderer.text(scene, nameX, 512, 'GROUND', 18, C.accent).setDepth(Renderer.DEPTH.overlay);
+    const ground = Renderer.STADIUMS.find((st) => st.key === Renderer.stadiumChoice);
+    Renderer.optionAt(scene, nameX, 546,
+      'G   STADIUM   ' + Renderer.stadiumChoice.toUpperCase(), 22, handlers.stadium);
+    Renderer.text(scene, cx - 10, 546,
+      ground ? ground.blurb : 'a different ground every match', 14, C.dim)
+      .setOrigin(0, 0.5).setDepth(Renderer.DEPTH.overlay);
+
+    // The keys themselves now live on a screen of their own, where they can be changed.
+    Renderer.optionAt(scene, nameX, 582, 'K   CHANGE THE KEYS', 22, handlers.keys);
+    Renderer.text(scene, cx - 10, 582, 'move, pass and shoot, for both players', 14, C.dim)
+      .setOrigin(0, 0.5).setDepth(Renderer.DEPTH.overlay);
 
     // Under the settings rather than among them, because it is not one: it leaves for a
     // different build of the game entirely.
@@ -1900,6 +2246,67 @@ const Renderer = {
 
     Renderer.centred(scene, 700,
       state.inMatch ? 'ESC  back to the match' : 'ESC  to go back', 20, C.dim);
+  },
+
+  /*
+   * Every key in the game, and every one of them changeable. Laid out as the same three
+   * column table the front screen uses, except each key is a thing you can press: pick one
+   * and the next key you touch becomes it.
+   */
+  KEYS_TABLE: { headerY: 244, topY: 288, rowGap: 42, messageY: 556 },
+
+  createKeysScreen(scene, state, handlers) {
+    const C = Renderer.CSS;
+    const cx = CONFIG.CANVAS.width / 2;
+    const T = Renderer.KEYS_TABLE;
+    const band = Renderer.SETTINGS_BAND;
+
+    scene.add.graphics()
+      .fillStyle(Renderer.PALETTE.surround, 1)
+      .fillRect(0, 0, CONFIG.CANVAS.width, CONFIG.CANVAS.height)
+      .fillStyle(Renderer.PALETTE.grass, 1)
+      .fillRect(0, band.top, CONFIG.CANVAS.width, band.height);
+
+    Renderer.centredDisplay(scene, 110, 'CONTROLS', 72);
+    Renderer.centred(scene, 172, 'click a key, then press the one you want it to be',
+      20, C.dim);
+
+    const labelX = cx - 250;
+    const columnX = { red: cx - 40, blue: cx + 190 };
+
+    ['red', 'blue'].forEach((team) => {
+      Renderer.text(scene, columnX[team], T.headerY, Renderer.TEAM_NAME[team], 20,
+        team === 'red' ? C.red : C.blue)
+        .setOrigin(0.5).setDepth(Renderer.DEPTH.overlay);
+    });
+
+    state.actions.forEach((action, i) => {
+      const y = T.topY + i * T.rowGap;
+      Renderer.text(scene, labelX, y, action.name, 20, C.hud)
+        .setOrigin(0, 0.5).setDepth(Renderer.DEPTH.overlay);
+
+      ['red', 'blue'].forEach((team) => {
+        const asking = state.capturing
+          && state.capturing.team === team
+          && state.capturing.action.key === action.key;
+        // The one being asked about says so in its own cell, so there is never any doubt
+        // about which key the next press is going to become.
+        const label = asking ? 'PRESS...' : Renderer.keyLabel(CONFIG.CONTROLS[team][action.key]);
+        const cell = Renderer.text(scene, columnX[team], y, label, 22,
+          asking ? C.accent : C.hud)
+          .setOrigin(0.5).setDepth(Renderer.DEPTH.overlay);
+        Renderer.makePickable(cell, () => handlers.rebind(team, action),
+          asking ? C.accent : C.hud);
+      });
+    });
+
+    // Kept in the same place whether or not there is anything to say, so the table above
+    // never shifts under a hand that is reaching for it.
+    Renderer.centred(scene, T.messageY, state.message || ' ', 18,
+      state.capturing ? C.accent : C.dim);
+
+    Renderer.option(scene, 645, 'R   RESET TO THE ORIGINALS', 24, handlers.reset);
+    Renderer.centred(scene, 690, 'ESC  back to settings', 20, C.dim);
   },
 
   /* Same furniture again, so the three menus feel like one screen changing its mind. */

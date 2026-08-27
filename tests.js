@@ -232,13 +232,44 @@ const DrunkTests = (() => {
         detail: 'pass ' + pass.toFixed(4) + ', shot ' + shot.toFixed(4),
       };
     });
-    check('outcome colours differ by category', () => {
-      const comic = Renderer.outcomeColour('whiff');
-      const disaster = Renderer.outcomeColour('faceplant');
-      const plain = Renderer.outcomeColour('wrongFoot');
+    check('a fumble is labelled in the colour of whoever fumbled it', () => {
+      const red = Renderer.outcomeColour('red');
+      const blue = Renderer.outcomeColour('blue');
+      // Lightened off the kit, or a label in a kit colour disappears into the grass.
+      const lum = (css) => {
+        const n = parseInt(css.slice(1), 16);
+        return ((n >> 16) & 0xff) * 0.299 + ((n >> 8) & 0xff) * 0.587 + (n & 0xff) * 0.114;
+      };
+      const brighter = lum(red) > lum(Renderer.hex(Renderer.THEME.redTeam))
+        && lum(blue) > lum(Renderer.hex(Renderer.THEME.blueTeam));
       return {
-        pass: comic !== disaster && disaster !== plain && comic !== plain,
-        detail: [comic, disaster, plain].join(' / '),
+        pass: red !== blue && brighter,
+        detail: 'red ' + red + ', blue ' + blue + ', lightened ' + brighter,
+      };
+    });
+    check('the label that goes up really is the fumbler\'s colour', () => {
+      const g = startMatch('two');
+      const shown = [];
+      ['red', 'blue'].forEach((team) => {
+        Renderer.onOutcome(g, g[team], 'whiff');
+        const label = g.children.list.filter((o) => o.depth === Renderer.DEPTH.label).pop();
+        shown.push(label && label.style.color);
+      });
+      return {
+        pass: shown[0] === Renderer.outcomeColour('red')
+          && shown[1] === Renderer.outcomeColour('blue'),
+        detail: shown.join(' / '),
+      };
+    });
+
+    check('the default skin is named, not whichever happens to be listed first', () => {
+      // Reordering the list to put classic first would otherwise have silently changed
+      // what a new player starts on.
+      const named = Renderer.SKINS.some((s) => s.key === Renderer.DEFAULT_SKIN);
+      return {
+        pass: named && Renderer.DEFAULT_SKIN === 'sixpints',
+        detail: 'default is ' + Renderer.DEFAULT_SKIN + ', first listed is '
+          + Renderer.SKINS[0].key,
       };
     });
 
@@ -295,15 +326,18 @@ const DrunkTests = (() => {
     });
 
     group('match');
-    check('the crowd never stands on the HUD', () => {
-      const wasSkin = Renderer.activeSkin;
-      Renderer.applySkin('sunday');
+    check('the crowd never stands on the HUD, in the biggest ground there is', () => {
+      // The largest stadium stands deepest, so it is the one with the most chance of
+      // somebody ending up in the scoreline.
+      const wasStadium = Renderer.stadiumChoice;
+      Renderer.stadiumChoice = 'large';
       const clashes = [];
       ['bot', 'two'].forEach((mode) => {
-        for (let run = 0; run < 4; run++) {
+        for (let run = 0; run < 3; run++) {
           const g = startMatch(mode);
           const fans = g.children.list.filter((o) => o.texture && o.texture.key === 'fan');
-          const hud = [g.hud.score, g.hud.timer, g.hud.left, g.hud.right, g.hud.hint];
+          const hud = [g.hud.score, g.hud.timer, g.hud.left, g.hud.right, g.hud.hint]
+            .filter(Boolean);
           hud.forEach((item) => {
             const box = boundsOf(item);
             fans.forEach((fan) => {
@@ -312,29 +346,89 @@ const DrunkTests = (() => {
           });
         }
       });
-      Renderer.applySkin(wasSkin);
-      return { pass: clashes.length === 0, detail: clashes.slice(0, 3).join(', ') };
+      Renderer.stadiumChoice = wasStadium;
+      return {
+        pass: clashes.length === 0,
+        detail: clashes.slice(0, 3).join(', ') || 'clear of the score, clock and both hints',
+      };
     });
-    check('the crowd is the size it claims to be', () => {
-      const wasSkin = Renderer.activeSkin;
-      Renderer.applySkin('sunday');
-      const K = Renderer.CROWD;
-      const counts = [];
-      for (let run = 0; run < 4; run++) {
-        const g = startMatch('two');
-        counts.push(g.children.list.filter((o) => o.texture && o.texture.key === 'fan').length);
-      }
-      Renderer.applySkin(wasSkin);
-      const bad = counts.filter((n) => n < K.minPeople || n > K.maxPeople);
-      return { pass: bad.length === 0, detail: 'counts ' + counts.join(', ') };
-    });
-    check('a skin without a crowd has none', () => {
-      const wasSkin = Renderer.activeSkin;
-      Renderer.applySkin('sixpints');
+    check('the stands are filled evenly, not packed down one side', () => {
+      // The bands either end have to dodge the HUD, and being over-cautious about it left
+      // a thin scatter along the top and a wall of people along the bottom.
+      const wasStadium = Renderer.stadiumChoice;
+      Renderer.stadiumChoice = 'large';
       const g = startMatch('two');
-      const fans = g.children.list.filter((o) => o.texture && o.texture.key === 'fan').length;
-      Renderer.applySkin(wasSkin);
-      return { pass: fans === 0, detail: fans + ' supporters on a skin that asked for none' };
+      const fans = g.children.list.filter((o) => o.texture && o.texture.key === 'fan');
+      const above = fans.filter((f) => f.y < CONFIG.PITCH.centreY).length;
+      const below = fans.length - above;
+      Renderer.stadiumChoice = wasStadium;
+      const ratio = Math.min(above, below) / Math.max(above, below);
+      return {
+        pass: ratio > 0.7,
+        detail: above + ' above, ' + below + ' below (' + ratio.toFixed(2) + ')',
+      };
+    });
+    check('a pinned ground is the one you get, and it is the size it claims', () => {
+      const wasStadium = Renderer.stadiumChoice;
+      const report = [];
+      const bad = [];
+      Renderer.STADIUMS.forEach((stadium) => {
+        Renderer.stadiumChoice = stadium.key;
+        for (let run = 0; run < 3; run++) {
+          const g = startMatch('two');
+          const n = g.children.list.filter((o) => o.texture && o.texture.key === 'fan').length;
+          if (Renderer.currentStadium.key !== stadium.key) bad.push(stadium.key + ' not honoured');
+          if (n < stadium.people[0] || n > stadium.people[1]) {
+            bad.push(stadium.key + ' turnout ' + n);
+          }
+          if (run === 0) report.push(stadium.key + ' ' + n);
+        }
+      });
+      Renderer.stadiumChoice = wasStadium;
+      return { pass: bad.length === 0, detail: bad.join(', ') || report.join(', ') };
+    });
+    check('a bigger ground really is bigger', () => {
+      // Ordered by both measures, so the three are told apart at a glance rather than
+      // being three names for the same thing.
+      const sizes = Renderer.STADIUMS;
+      const rows = sizes.map((s) => s.rows);
+      const most = sizes.map((s) => s.people[1]);
+      const rising = (a) => a.every((n, i) => i === 0 || n > a[i - 1]);
+      return {
+        pass: sizes.length === 3 && rising(rows) && rising(most),
+        detail: 'rows ' + rows.join('<') + ', crowd ' + most.join('<'),
+      };
+    });
+    check('random gives more than one ground', () => {
+      const wasStadium = Renderer.stadiumChoice;
+      Renderer.stadiumChoice = 'random';
+      const seen = new Set();
+      for (let run = 0; run < 24; run++) {
+        startMatch('two');
+        seen.add(Renderer.currentStadium.key);
+      }
+      Renderer.stadiumChoice = wasStadium;
+      return { pass: seen.size > 1, detail: [...seen].join(', ') };
+    });
+    check('every ground stays inside the surround', () => {
+      // There is 60px above the pitch and 60px below it. A row of people standing outside
+      // that is a row standing on the pitch, or off the screen altogether.
+      const K = Renderer.CROWD;
+      const P = CONFIG.PITCH;
+      const wasStadium = Renderer.stadiumChoice;
+      const bad = [];
+      Renderer.STADIUMS.forEach((stadium) => {
+        Renderer.stadiumChoice = stadium.key;
+        const g = startMatch('two');
+        g.children.list.filter((o) => o.texture && o.texture.key === 'fan').forEach((fan) => {
+          const b = boundsOf(fan);
+          const above = b.bottom <= P.top && b.top >= 0;
+          const below = b.top >= P.bottom && b.bottom <= CONFIG.CANVAS.height;
+          if (!above && !below) bad.push(stadium.key + ' at y' + Math.round(fan.y));
+        });
+      });
+      Renderer.stadiumChoice = wasStadium;
+      return { pass: bad.length === 0, detail: bad.slice(0, 4).join(', ') || 'all in the stands' };
     });
     check('the HUD score and clock do not collide', () => {
       const g = startMatch('bot');
@@ -359,8 +453,9 @@ const DrunkTests = (() => {
     check('small copy stays on the system stack', () => {
       const g = startMatch('bot');
       const bad = [];
-      if (leadsWithDisplayFace(g.hud.hint)) bad.push('pause hint');
-      if (leadsWithDisplayFace(g.hud.left)) bad.push('controls');
+      // Absent in a thumb-controlled match, where neither has anything to say.
+      if (g.hud.hint && leadsWithDisplayFace(g.hud.hint)) bad.push('pause hint');
+      if (g.hud.left && leadsWithDisplayFace(g.hud.left)) bad.push('controls');
       return { pass: bad.length === 0, detail: bad.join(', ') };
     });
     /*
@@ -889,41 +984,51 @@ const DrunkTests = (() => {
     });
     check('dragging the stick reports how far it was pushed, not how many pixels', () => {
       return withTouch('bot', (g) => {
-        const S = Renderer.TOUCH.stick;
+        const L = Renderer.touchLayout();
+        const S = L.stick;
         const v = g.touchView;
-        // Picked up well away from where it rests: the stick is supposed to follow a thumb.
-        const grabX = 300;
-        const grabY = 600;
-        v.zone.emit('pointerdown', { id: 7, worldX: grabX, worldY: grabY });
-        const moved = Math.abs(v.base.x - grabX) < 1 && Math.abs(v.base.y - grabY) < 1;
+        /*
+         * Picked up well down its own column. It follows a thumb along the column and is
+         * held inside it across the column, which is the whole behaviour: the sideways
+         * clamp is what keeps it off the pitch.
+         */
+        const grabY = CONFIG.CANVAS.height - S.margin;
+        v.zone.emit('pointerdown', { id: 7, worldX: S.x, worldY: grabY });
+        const followed = Math.abs(v.base.y - grabY) < 1;
+        const inColumn = v.base.x >= S.margin - 1
+          && v.base.x <= Math.max(S.margin, L.stickZone.right - S.margin) + 1;
 
-        // Pushed right by exactly half the travel, then further than the stick can go.
-        g.input.emit('pointermove', { id: 7, worldX: grabX + S.travel / 2, worldY: grabY });
+        // Pushed from wherever the base ended up: half the travel, then far past the end.
+        const from = { x: v.base.x, y: v.base.y };
+        g.input.emit('pointermove', { id: 7, worldX: from.x + S.travel / 2, worldY: from.y });
         const half = g.touch.x;
-        g.input.emit('pointermove', { id: 7, worldX: grabX + S.travel * 4, worldY: grabY });
+        g.input.emit('pointermove', { id: 7, worldX: from.x + S.travel * 4, worldY: from.y });
         const capped = g.touch.x;
         const nubHeld = Math.abs(v.nub.x - (v.base.x + S.travel)) < 1;
 
         g.input.emit('pointerup', { id: 7 });
-        const let_go = g.touch.x === 0 && Math.abs(v.base.x - S.x) < 1;
+        const let_go = g.touch.x === 0 && Math.abs(v.base.y - S.y) < 1;
 
         return {
-          pass: moved && Math.abs(half - 0.5) < 0.02 && Math.abs(capped - 1) < 0.02
-            && nubHeld && let_go,
-          detail: 'picked up ' + moved + ', half ' + half.toFixed(2) + ', capped '
-            + capped.toFixed(2) + ', nub held ' + nubHeld + ', released ' + let_go,
+          pass: followed && inColumn && Math.abs(half - 0.5) < 0.02
+            && Math.abs(capped - 1) < 0.02 && nubHeld && let_go,
+          detail: 'followed ' + followed + ', in column ' + inColumn + ', half '
+            + half.toFixed(2) + ', capped ' + capped.toFixed(2) + ', nub held ' + nubHeld
+            + ', released ' + let_go,
         };
       });
     });
     check('a second thumb cannot steal the stick', () => {
       return withTouch('bot', (g) => {
+        const S = Renderer.touchLayout().stick;
         const v = g.touchView;
-        v.zone.emit('pointerdown', { id: 1, worldX: 300, worldY: 600 });
-        v.zone.emit('pointerdown', { id: 2, worldX: 120, worldY: 400 });
-        const stayed = Math.abs(v.base.x - 300) < 1;
+        const first = CONFIG.CANVAS.height - S.margin;
+        v.zone.emit('pointerdown', { id: 1, worldX: S.x, worldY: first });
+        v.zone.emit('pointerdown', { id: 2, worldX: S.x, worldY: S.margin });
+        const stayed = Math.abs(v.base.y - first) < 1;
         // The button thumb lifting must not drop the steering thumb's stick.
         g.input.emit('pointerup', { id: 2 });
-        const held = Math.abs(v.base.x - 300) < 1;
+        const held = Math.abs(v.base.y - first) < 1;
         g.input.emit('pointerup', { id: 1 });
         return { pass: stayed && held, detail: 'stayed ' + stayed + ', held ' + held };
       });
@@ -983,10 +1088,10 @@ const DrunkTests = (() => {
     });
 
     check('nothing on the thumb layout touches anything else on it', () => {
-      const T = Renderer.TOUCH;
+      const L = Renderer.touchLayout();
       const circles = [
-        { name: 'stick', x: T.stick.x, y: T.stick.y, r: T.stick.baseRadius },
-      ].concat(T.buttons.map((b) => ({ name: b.key, x: b.x, y: b.y, r: b.radius })));
+        { name: 'stick', x: L.stick.x, y: L.stick.y, r: L.stick.baseRadius },
+      ].concat(L.buttons.map((b) => ({ name: b.key, x: b.x, y: b.y, r: b.radius })));
       const clashes = [];
       for (let i = 0; i < circles.length; i++) {
         for (let j = i + 1; j < circles.length; j++) {
@@ -996,7 +1101,7 @@ const DrunkTests = (() => {
         }
       }
       // The pause pill sits in the surround under the pitch, between the two thumbs.
-      const pill = Renderer.TOUCH.pause;
+      const pill = L.pause;
       circles.forEach((c) => {
         const nearestX = Math.max(pill.x - pill.width / 2, Math.min(c.x, pill.x + pill.width / 2));
         const nearestY = Math.max(pill.y - pill.height / 2, Math.min(c.y, pill.y + pill.height / 2));
@@ -1004,22 +1109,63 @@ const DrunkTests = (() => {
       });
       return { pass: clashes.length === 0, detail: clashes.join(', ') || 'all clear' };
     });
+    check('the wide frame moves the pitch without resizing it', () => {
+      // The promise the whole frame rests on: a phone plays the same game, not a smaller
+      // one. Only the margins either side of the pitch differ.
+      const P = CONFIG.PITCH;
+      const F = CONFIG.FRAME;
+      const gutterLeft = P.left;
+      const gutterRight = CONFIG.CANVAS.width - P.right;
+      return {
+        pass: P.width === 1120 && P.height === 600 && gutterLeft === gutterRight
+          && gutterLeft === (F.wide ? 80 + F.gutter : 80),
+        detail: 'play area ' + P.width + 'x' + P.height + ', gutters '
+          + gutterLeft + '/' + gutterRight + ', wide ' + F.wide,
+      };
+    });
+    check('no thumb control stands on the pitch', () => {
+      /*
+       * The reason the frame is wide at all. Meaningful only in that frame, which is what
+       * tests.html?wide boots, and asking for thumb controls for real is what turns it on.
+       */
+      if (!CONFIG.FRAME.wide) return { pass: true, detail: 'narrow frame, nothing to check' };
+      const L = Renderer.touchLayout();
+      const P = CONFIG.PITCH;
+      const on = [];
+      const clear = (name, left, right) => {
+        if (right > P.left && left < P.right) on.push(name);
+      };
+      const S = L.stick;
+      // Worst case: the stick picked up at the far edge of its column, pushed all the way
+      // over, so the nub is as close to the touchline as it can ever get.
+      const basedAt = Math.max(S.margin, L.stickZone.right - S.margin);
+      clear('stick ring', S.x - S.baseRadius, basedAt + S.baseRadius);
+      clear('stick nub', S.x - S.baseRadius - S.travel, basedAt + S.travel + S.nubRadius);
+      L.buttons.forEach((b) => clear(b.key, b.x - b.radius, b.x + b.radius));
+      // The pause pill is centred, so it is only ever clear of the pitch vertically.
+      const pillTop = L.pause.y - L.pause.height / 2;
+      if (pillTop < P.bottom) on.push('pause');
+      return { pass: on.length === 0, detail: on.join(', ') || 'all clear of the grass' };
+    });
     check('every thumb control is on the screen', () => {
-      const T = Renderer.TOUCH;
+      // Wide frame only, for the same reason as the check above: it is the only frame in
+      // which thumb controls are ever really drawn.
+      if (!CONFIG.FRAME.wide) return { pass: true, detail: 'narrow frame, nothing to check' };
+      const L = Renderer.touchLayout();
       const W = CONFIG.CANVAS.width;
       const H = CONFIG.CANVAS.height;
       const off = [];
       const box = (name, left, top, right, bottom) => {
         if (left < 0 || top < 0 || right > W || bottom > H) off.push(name);
       };
-      // The stick is checked at full travel, which is as far as it is ever drawn.
-      const S = T.stick;
-      const reach = S.baseRadius + S.travel;
+      // Checked at whatever reaches further, the ring or the nub pushed all the way out.
+      const S = L.stick;
+      const reach = S.margin;
       box('stick', S.x - reach, S.y - reach, S.x + reach, S.y + reach);
-      T.buttons.forEach((b) => box(b.key, b.x - b.radius, b.y - b.radius,
+      L.buttons.forEach((b) => box(b.key, b.x - b.radius, b.y - b.radius,
         b.x + b.radius, b.y + b.radius));
-      box('pause', T.pause.x - T.pause.width / 2, T.pause.y - T.pause.height / 2,
-        T.pause.x + T.pause.width / 2, T.pause.y + T.pause.height / 2);
+      box('pause', L.pause.x - L.pause.width / 2, L.pause.y - L.pause.height / 2,
+        L.pause.x + L.pause.width / 2, L.pause.y + L.pause.height / 2);
       return { pass: off.length === 0, detail: off.join(', ') || 'all on screen' };
     });
 
@@ -1039,18 +1185,25 @@ const DrunkTests = (() => {
       });
     });
     check('the setting cycles through all three and is remembered', () => {
+      // The stored blob, not just the live value: this check calls the real save, and a
+      // suite that leaves the game booting into a different frame next time is a suite
+      // that has broken something.
+      const storedBefore = window.localStorage.getItem('drunkfootball.prefs');
       const was = AIM.touch;
       AIM.touch = 'auto';
       const s = sceneByKey('Settings');
       const seen = [];
       for (let i = 0; i < 4; i++) {
         seen.push(AIM.touch);
-        s.cycleTouch.call({ refresh: () => {} });
+        // Stubbed on both counts: a real cycle either redraws the screen or, when the
+        // frame width changes with it, reloads the page out from under the suite.
+        s.cycleTouch.call({ refresh: () => {}, restartForFrame: () => {} });
       }
       const stored = JSON.parse(window.localStorage.getItem('drunkfootball.prefs') || '{}');
       const remembered = stored.touch === AIM.touch;
       AIM.touch = was;
-      savePrefs();
+      if (storedBefore === null) window.localStorage.removeItem('drunkfootball.prefs');
+      else window.localStorage.setItem('drunkfootball.prefs', storedBefore);
       return {
         pass: seen.join(',') === 'auto,on,off,auto' && remembered,
         detail: seen.join(',') + ', remembered ' + remembered,
@@ -1109,6 +1262,295 @@ const DrunkTests = (() => {
         pass: pickable.length === 2,
         detail: pickable.map((t) => t.text).join(' | ') || 'nothing pickable',
       };
+    });
+
+    group('floodlights');
+
+    /* Runs fn under the floodlit skin and puts the old one back afterwards. */
+    function underLights(fn) {
+      const was = Renderer.activeSkin;
+      Renderer.applySkin('floodlit');
+      try {
+        return fn(startMatch('two'));
+      } finally {
+        Renderer.applySkin(was);
+      }
+    }
+
+    const poolsIn = (scene) => scene.children.list.filter((o) => o.texture
+      && o.texture.key === 'light_pool');
+    const shadowsIn = (scene) => scene.children.list.filter((o) => o.texture
+      && o.texture.key === 'soft_shadow');
+
+    check('the floodlit ground has a tower in each corner', () => {
+      return underLights((g) => {
+        const towers = Renderer.pylonPositions();
+        const P = CONFIG.PITCH;
+        // One per corner, and each of them actually outside the playing area.
+        const outside = towers.filter((t) => t.x < P.left || t.x > P.right);
+        return {
+          pass: towers.length === 4 && outside.length === 4
+            && poolsIn(g).length >= 4,
+          detail: towers.length + ' towers, ' + outside.length + ' clear of the pitch, '
+            + poolsIn(g).length + ' pools',
+        };
+      });
+    });
+    check('no tower stands on the HUD', () => {
+      // They did. The control legend runs along the very top of the surround and the
+      // corners are the only place a tower can go.
+      return underLights((g) => {
+        const clashes = [];
+        Renderer.pylonPositions().forEach((pylon, i) => {
+          const box = Renderer.pylonBox(pylon);
+          [g.hud.score, g.hud.timer, g.hud.left, g.hud.right, g.hud.hint]
+            .filter(Boolean)
+            .forEach((item) => {
+              if (overlaps(box, boundsOf(item), 0)) clashes.push('tower ' + i);
+            });
+        });
+        return { pass: clashes.length === 0, detail: clashes.join(', ') || 'all four clear' };
+      });
+    });
+    check('everybody on the pitch casts one shadow per tower', () => {
+      return underLights((g) => {
+        step(4);
+        const casters = g.players.length + g.keepers.length + 1;   // and the ball
+        const want = casters * Renderer.pylonPositions().length;
+        const got = shadowsIn(g).length;
+        return { pass: got === want, detail: got + ' shadows for ' + casters + ' on the pitch' };
+      });
+    });
+    check('a shadow falls away from its tower, and follows whoever cast it', () => {
+      return underLights((g) => {
+        const P = CONFIG.PITCH;
+        g.red.sprite.setPosition(P.centreX, P.centreY);
+        step(4);
+        const entry = g.juiceState.shadows.find((e) => e.caster.sprite === g.red.sprite);
+        const wrongSide = entry.blobs.filter((blob, i) => {
+          const pylon = entry.pylons[i];
+          // Further from the tower than the player is, in both directions.
+          const dp = Math.hypot(g.red.sprite.x - pylon.x, g.red.sprite.y - pylon.y);
+          const db = Math.hypot(blob.x - pylon.x, blob.y - pylon.y);
+          return db <= dp;
+        });
+
+        // And they move with him rather than staying where he was.
+        const before = entry.blobs.map((b) => b.x);
+        g.red.sprite.setPosition(P.centreX + 200, P.centreY);
+        step(2);
+        const moved = entry.blobs.every((b, i) => b.x > before[i]);
+
+        return {
+          pass: wrongSide.length === 0 && moved,
+          detail: wrongSide.length + ' on the wrong side, followed ' + moved,
+        };
+      });
+    });
+    check('only the floodlit ground has any of it', () => {
+      const was = Renderer.activeSkin;
+      const bad = [];
+      Renderer.SKINS.filter((sk) => sk.key !== 'floodlit').forEach((sk) => {
+        Renderer.applySkin(sk.key);
+        const g = startMatch('two');
+        step(4);
+        if (poolsIn(g).length || shadowsIn(g).length) bad.push(sk.key);
+      });
+      Renderer.applySkin(was);
+      return { pass: bad.length === 0, detail: bad.join(', ') || 'daylight everywhere else' };
+    });
+    check('turning the lights off leaves a plain dark pitch', () => {
+      const was = Renderer.JUICE.floodlights.on;
+      Renderer.JUICE.floodlights.on = false;
+      const out = underLights((g) => {
+        step(4);
+        return {
+          pass: poolsIn(g).length === 0 && shadowsIn(g).length === 0,
+          detail: poolsIn(g).length + ' pools, ' + shadowsIn(g).length + ' shadows',
+        };
+      });
+      Renderer.JUICE.floodlights.on = was;
+      return out;
+    });
+    check('the floodlit pitch really is the darkest one', () => {
+      const lum = (c) => ((c >> 16) & 0xff) * 0.299 + ((c >> 8) & 0xff) * 0.587 + (c & 0xff) * 0.114;
+      const floodlit = Renderer.SKINS.find((sk) => sk.key === 'floodlit');
+      const brighter = Renderer.SKINS
+        .filter((sk) => sk.key !== 'floodlit')
+        .filter((sk) => lum(sk.colours.pitchGreen) <= lum(floodlit.colours.pitchGreen));
+      return {
+        pass: brighter.length === 0 && Renderer.FLOODLIGHTS.darken > 0.3,
+        detail: brighter.map((sk) => sk.key).join(', ')
+          || 'darkest grass, then dimmed a further ' + Renderer.FLOODLIGHTS.darken,
+      };
+    });
+
+    group('changing the keys');
+
+    /* The cell for one action, found the way a finger finds it: by where it is drawn. */
+    function keyCell(scene, team, actionKey) {
+      const T = Renderer.KEYS_TABLE;
+      const i = ACTIONS.findIndex((a) => a.key === actionKey);
+      const y = T.topY + i * T.rowGap;
+      const cx = CONFIG.CANVAS.width / 2;
+      const x = team === 'red' ? cx - 40 : cx + 190;
+      return scene.children.list.find((o) => o.input && o.text !== undefined
+        && Math.abs(o.y - y) < 2 && Math.abs(o.x - x) < 2);
+    }
+
+    function pressKey(keyCode) {
+      window.dispatchEvent(new KeyboardEvent('keydown', { keyCode, which: keyCode, bubbles: true }));
+      step(4);
+    }
+
+    /* Runs fn against a fresh keys screen and puts every binding back afterwards. */
+    function withKeysScreen(fn) {
+      const before = JSON.parse(JSON.stringify(CONFIG.CONTROLS));
+      const stored = window.localStorage.getItem('drunkfootball.prefs');
+      try {
+        onlyScene('Keys');
+        sceneByKey('Menu').scene.start('Keys', { returnTo: null });
+        step(8);
+        return fn();
+      } finally {
+        Object.keys(before).forEach((team) => {
+          ACTIONS.forEach((a) => { CONFIG.CONTROLS[team][a.key] = before[team][a.key]; });
+        });
+        if (stored === null) window.localStorage.removeItem('drunkfootball.prefs');
+        else window.localStorage.setItem('drunkfootball.prefs', stored);
+      }
+    }
+
+    check('every key in the game is on the screen and can be picked', () => {
+      return withKeysScreen(() => {
+        const scene = sceneByKey('Keys');
+        const missing = [];
+        ['red', 'blue'].forEach((team) => {
+          ACTIONS.forEach((a) => {
+            if (!keyCell(scene, team, a.key)) missing.push(team + ' ' + a.key);
+          });
+        });
+        return {
+          pass: missing.length === 0,
+          detail: missing.join(', ') || (ACTIONS.length * 2) + ' keys, all pickable',
+        };
+      });
+    });
+    check('picking a key and pressing another binds it', () => {
+      return withKeysScreen(() => {
+        keyCell(sceneByKey('Keys'), 'red', 'up').emit('pointerdown');
+        step(8);
+        const asked = !!sceneByKey('Keys').capturing;
+        pressKey(Phaser.Input.Keyboard.KeyCodes.T);
+        step(8);
+        const bound = CONFIG.CONTROLS.red.up;
+        const saved = JSON.parse(window.localStorage.getItem('drunkfootball.prefs') || '{}');
+        return {
+          pass: asked && bound === 'T' && saved.controls && saved.controls.red.up === 'T',
+          detail: 'asked ' + asked + ', bound ' + bound,
+        };
+      });
+    });
+    check("a key that is already somebody else's is refused", () => {
+      // Refused rather than swapped: two things answering to one key is the bug, and
+      // silently moving somebody else's key is not the fix.
+      return withKeysScreen(() => {
+        const scene = sceneByKey('Keys');
+        keyCell(scene, 'red', 'up').emit('pointerdown');
+        step(8);
+        pressKey(Phaser.Input.Keyboard.KeyCodes.I);   // blue's up
+        step(8);
+        return {
+          pass: CONFIG.CONTROLS.red.up === 'W' && CONFIG.CONTROLS.blue.up === 'I'
+            && sceneByKey('Keys').message.indexOf('already') !== -1,
+          detail: 'red up ' + CONFIG.CONTROLS.red.up + ', blue up ' + CONFIG.CONTROLS.blue.up
+            + ', said "' + sceneByKey('Keys').message + '"',
+        };
+      });
+    });
+    check('a key the match itself needs is refused', () => {
+      return withKeysScreen(() => {
+        const refused = [];
+        Object.keys(RESERVED_KEYS).forEach((name) => {
+          keyCell(sceneByKey('Keys'), 'red', 'pass').emit('pointerdown');
+          step(8);
+          pressKey(Phaser.Input.Keyboard.KeyCodes[name]);
+          step(8);
+          if (CONFIG.CONTROLS.red.pass === name) refused.push(name + ' got through');
+        });
+        return {
+          pass: refused.length === 0,
+          detail: refused.join(', ') || Object.keys(RESERVED_KEYS).join(', ') + ' all held back',
+        };
+      });
+    });
+    check('escape backs out of the question rather than out of the screen', () => {
+      return withKeysScreen(() => {
+        keyCell(sceneByKey('Keys'), 'blue', 'shoot').emit('pointerdown');
+        step(8);
+        pressKey(Phaser.Input.Keyboard.KeyCodes.ESC);
+        step(8);
+        return {
+          pass: CONFIG.CONTROLS.blue.shoot === 'PLUS'
+            && !sceneByKey('Keys').capturing
+            && window.game.scene.isActive('Keys'),
+          detail: 'still on the screen ' + window.game.scene.isActive('Keys')
+            + ', shoot ' + CONFIG.CONTROLS.blue.shoot,
+        };
+      });
+    });
+    check('reset puts every key back', () => {
+      return withKeysScreen(() => {
+        keyCell(sceneByKey('Keys'), 'red', 'up').emit('pointerdown');
+        step(8);
+        pressKey(Phaser.Input.Keyboard.KeyCodes.T);
+        step(8);
+        sceneByKey('Keys').resetAll();
+        step(8);
+        const wrong = [];
+        Object.keys(DEFAULT_CONTROLS).forEach((team) => {
+          ACTIONS.forEach((a) => {
+            if (CONFIG.CONTROLS[team][a.key] !== DEFAULT_CONTROLS[team][a.key]) {
+              wrong.push(team + ' ' + a.key);
+            }
+          });
+        });
+        return { pass: wrong.length === 0, detail: wrong.join(', ') || 'all back to the originals' };
+      });
+    });
+    check('a rebound key really is the one that moves the player', () => {
+      // The whole point. Everything above is bookkeeping until the match reads it.
+      const before = CONFIG.CONTROLS.red.right;
+      CONFIG.CONTROLS.red.right = 'T';
+      const g = startMatch('two');
+      const startX = g.red.sprite.x;
+      g.keys.red.T.isDown = true;
+      step(20);
+      const movedOnNew = g.red.sprite.x - startX;
+      g.keys.red.T.isDown = false;
+      CONFIG.CONTROLS.red.right = before;
+      return {
+        pass: movedOnNew > 20,
+        detail: 'moved ' + Math.round(movedOnNew) + 'px on the rebound key',
+      };
+    });
+    check('keys changed during a pause are live again on resume', () => {
+      // Settings is reachable from a paused match, so the bindings a match started with
+      // are not necessarily the ones it should finish with.
+      const before = CONFIG.CONTROLS.red.right;
+      const g = startMatch('two');
+      g.togglePause();
+      step(2);
+      CONFIG.CONTROLS.red.right = 'T';
+      g.openSettings();
+      step(4);
+      sceneByKey('Settings').leave();
+      step(6);
+      const back = sceneByKey('Game');
+      const bound = !!(back.keys.red.T);
+      CONFIG.CONTROLS.red.right = before;
+      back.rebindKeys();
+      return { pass: bound, detail: 'match knows the new key: ' + bound };
     });
 
     group('hooks');
@@ -1228,8 +1670,9 @@ const DrunkTests = (() => {
       g.ball.body.setVelocity(0, 0);
       g.ball.setPosition(P.centreX - 155, P.centreY - 40);
       // Held mid-push, so the stick is photographed doing its job rather than at rest.
-      g.touchView.zone.emit('pointerdown', { id: 9, worldX: 300, worldY: 560 });
-      g.input.emit('pointermove', { id: 9, worldX: 360, worldY: 520 });
+      const S = Renderer.touchLayout().stick;
+      g.touchView.zone.emit('pointerdown', { id: 9, worldX: S.x, worldY: S.y });
+      g.input.emit('pointermove', { id: 9, worldX: S.x + S.travel, worldY: S.y - S.travel / 2 });
       step(2);
       return g;
     },
