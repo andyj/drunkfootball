@@ -486,6 +486,48 @@ const DrunkTests = (() => {
       });
       return { pass: bad.length === 0, detail: bad.join(', ') || 'both tucked in behind the nets' };
     });
+    check('there is grass between the back of the net and the stand', () => {
+      // A stand built hard against the netting reads as part of the goal rather than as
+      // somewhere people are standing to watch it.
+      const P = CONFIG.PITCH;
+      const large = Renderer.STADIUMS.find((st) => st.key === 'large');
+      const gaps = Renderer.endStands(large).map((end) => {
+        const netBack = end.dir < 0 ? P.left - P.goalDepth : P.right + P.goalDepth;
+        return Math.round(Math.abs(end.face - netBack));
+      });
+      return {
+        pass: gaps.length === 2 && gaps.every((gap) => gap >= 8),
+        detail: gaps.join('px and ') + 'px off the netting',
+      };
+    });
+    check('everybody in an end stand is inside it, sway and all', () => {
+      /*
+       * The space behind a goal line is fixed and most of it is net, so what is left has
+       * to hold the seating exactly. This is the sum that decides how many columns fit:
+       * get it wrong and somebody in the back one is leaning through the back wall, or
+       * off the edge of the screen entirely.
+       */
+      const K = Renderer.CROWD;
+      const large = Renderer.STADIUMS.find((st) => st.key === 'large');
+      const reach = K.figureRadius + K.swayPx;
+      const bad = [];
+      Renderer.endStands(large).forEach((end) => {
+        const near = Math.min(end.face, end.back);
+        const far = Math.max(end.face, end.back);
+        end.columns.forEach((column, i) => {
+          const r = reach * column.scale;
+          if (column.x - r < near - 0.01 || column.x + r > far + 0.01) {
+            bad.push('column ' + i + ' at x' + Math.round(column.x) + ' of ' + Math.round(near)
+              + '-' + Math.round(far));
+          }
+        });
+      });
+      return {
+        pass: bad.length === 0,
+        detail: bad.join(', ') || 'every seat clear of both walls, '
+          + Renderer.ENDS.columns + ' deep',
+      };
+    });
     check('sunday league is played on its own ground and no other', () => {
       // Its blurb promises mud, a rail and a dozen witnesses. A brick terrace is not that.
       const wasSkin = Renderer.activeSkin;
@@ -730,6 +772,141 @@ const DrunkTests = (() => {
       return {
         pass: drawn.length > 0 && outside.length === 0,
         detail: drawn.length + ' strands, ' + outside.length + ' escaping the mouth',
+      };
+    });
+    /*
+     * The goal is drawn rather than baked from a picture, so what it looks like is
+     * arithmetic and can be checked as arithmetic. A recorder standing in for a Graphics
+     * object is enough: what matters is where each stroke lands, not the pixels.
+     */
+    function recorder() {
+      const r = { fills: [], lines: [], circles: [] };
+      r.fillStyle = (colour) => { r.fill = colour; };
+      r.lineStyle = (width, colour, alpha) => {
+        r.width = width;
+        r.stroke = colour;
+        r.alpha = alpha === undefined ? 1 : alpha;
+      };
+      r.fillRect = (x, y, w, h) => r.fills.push({ x, y, w, h, colour: r.fill });
+      r.lineBetween = (x1, y1, x2, y2) => r.lines.push({
+        x1, y1, x2, y2, colour: r.stroke, alpha: r.alpha, width: r.width,
+      });
+      r.fillCircle = (x, y, radius) => r.circles.push({ x, y, radius, colour: r.fill });
+      r.strokeCircle = (x, y, radius) => r.circles.push({ x, y, radius, rim: true });
+      return r;
+    }
+
+    check('nobody is sat in a doorway', () => {
+      /*
+       * Every stand has a way out cut into its back wall, and the seating is laid on a
+       * grid that knows nothing about it. Left alone, that puts two supporters in the
+       * doorway of every block, sitting in mid air with the wall drawn through them.
+       */
+      const S = Renderer.STADIUMS.find((st) => st.key === 'large');
+      const room = Math.max(Renderer.SEATS.width, Renderer.SEATS.height) / 2;
+      const doors = Renderer.standRows(S)
+        .reduce((all, side) => all.concat(Renderer.exitsIn(side)), [])
+        .concat(Renderer.endStands(S).map((end) => end.exit))
+        .map((exit) => ({
+          left: exit.x - exit.width / 2, right: exit.x + exit.width / 2,
+          top: exit.y - exit.height / 2, bottom: exit.y + exit.height / 2,
+        }));
+      const blocked = Renderer.seatPlaces(S).filter((place) => doors.some((door) => overlaps(
+        { left: place.seat.x - room, right: place.seat.x + room,
+          top: place.seat.y - room, bottom: place.seat.y + room }, door, 0)));
+      return {
+        pass: doors.length === 6 && blocked.length === 0,
+        detail: blocked.length ? blocked.length + ' seats in the way of ' + doors.length + ' doors'
+          : Renderer.seatPlaces(S).length + ' seats, all of ' + doors.length + ' doorways clear',
+      };
+    });
+    check('the netting is in shade towards the back of the net', () => {
+      // Flat dark grey behind the line is what makes a goal look painted on. Each band
+      // back has to be darker than the one in front of it, and its strands fainter.
+      const rec = recorder();
+      Renderer.drawNet(rec, Renderer.PALETTE, -1);
+      const bands = rec.fills.slice().sort((a, b) => b.x - a.x);
+      const lum = (c) => ((c >> 16) & 255) + ((c >> 8) & 255) + (c & 255);
+      const strands = bands.map((band) => rec.lines
+        .filter((l) => Math.abs(l.x2 - l.x1) > 0.01)
+        .filter((l) => {
+          // A pixel in off each edge: the bands are painted with a shade of overlap so
+          // their seams do not show, and that overlap reaches into the next band's mesh.
+          const mid = (l.x1 + l.x2) / 2;
+          return mid > band.x + 1 && mid < band.x + band.w - 1;
+        })
+        .reduce((most, l) => Math.max(most, l.alpha), 0));
+      const wrong = [];
+      bands.forEach((band, i) => {
+        if (i > 0 && lum(band.colour) >= lum(bands[i - 1].colour)) wrong.push('band ' + i + ' no darker');
+        if (i > 0 && strands[i] >= strands[i - 1]) wrong.push('band ' + i + ' no fainter');
+      });
+      return {
+        pass: bands.length >= 4 && wrong.length === 0,
+        detail: wrong.join(', ') || bands.length + ' bands, ' + lum(bands[0].colour) + ' down to '
+          + lum(bands[bands.length - 1].colour) + ' with strands '
+          + strands[0].toFixed(2) + ' down to ' + strands[strands.length - 1].toFixed(2),
+      };
+    });
+    check('the mesh does not restart at the seams between the bands', () => {
+      /*
+       * The shading is drawn band by band but the netting is one net. Every strand runs at
+       * 45 degrees, so y-x names a strand going one way and y+x one going the other: if a
+       * band laid out its own mesh from its own edge, those numbers would stop landing on
+       * a single lattice and the seams would show as chevrons.
+       */
+      const rec = recorder();
+      Renderer.drawNet(rec, Renderer.PALETTE, -1);
+      const step = Renderer.GOAL.netSpacing;
+      const lattice = { down: null, up: null };
+      const off = [];
+      rec.lines.forEach((l) => {
+        // A strand clipped to a corner arrives as a point, which has no direction to read.
+        if (Math.abs(l.x2 - l.x1) < 0.01) return;
+        const way = (l.y2 - l.y1) * (l.x2 - l.x1) >= 0 ? 'down' : 'up';
+        const c = way === 'down' ? l.y1 - l.x1 : l.y1 + l.x1;
+        if (lattice[way] === null) lattice[way] = c;
+        const from = Math.abs(((c - lattice[way]) % step + step) % step);
+        if (Math.min(from, step - from) > 0.01) off.push(way + ' strand at ' + Math.round(c));
+      });
+      return {
+        pass: rec.lines.length > 40 && off.length === 0,
+        detail: off.slice(0, 3).join(', ') || rec.lines.length + ' strands, all on the same mesh',
+      };
+    });
+    check('the whole goal fits in the goal', () => {
+      /*
+       * There is a stand ten pixels behind the netting now and a keeper in front of it, so
+       * a frame drawn a shade too generously would be drawn through one or the other. The
+       * uprights and the stanchions are the exception, and only by their own thickness:
+       * they stand on the line and on the back of the net, so half of each is outside.
+       */
+      const P = CONFIG.PITCH;
+      const N = Renderer.GOAL;
+      const rec = recorder();
+      Renderer.drawNet(rec, Renderer.PALETTE, -1);
+      Renderer.drawGoalFrame(rec, Renderer.PALETTE, -1);
+      const box = {
+        left: P.left - P.goalDepth - N.stanchionRadius,
+        right: P.left + N.postRadius,
+        top: P.mouthTop - N.postRadius,
+        bottom: P.mouthBottom + N.postRadius,
+      };
+      const out = [];
+      const test = (what, left, right, top, bottom) => {
+        if (left < box.left - 0.6 || right > box.right + 0.6
+          || top < box.top - 0.6 || bottom > box.bottom + 0.6) out.push(what);
+      };
+      rec.fills.forEach((f) => test('netting', f.x, f.x + f.w, f.y, f.y + f.h));
+      rec.lines.forEach((l) => test('a strand or a bar', Math.min(l.x1, l.x2), Math.max(l.x1, l.x2),
+        Math.min(l.y1, l.y2), Math.max(l.y1, l.y2)));
+      rec.circles.forEach((c) => test('a post', c.x - c.radius, c.x + c.radius,
+        c.y - c.radius, c.y + c.radius));
+      return {
+        pass: out.length === 0 && rec.circles.length === 8,
+        detail: out.length ? [...new Set(out)].join(', ') + ' outside the recess'
+          : 'net, frame, 2 uprights and 2 stanchions, all inside '
+            + Math.round(box.right - box.left) + 'px',
       };
     });
     check('the pitch markings do not move the walls', () => {

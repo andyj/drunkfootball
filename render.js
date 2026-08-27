@@ -202,9 +202,13 @@ const Renderer = {
    * at a time looks like, and a continuous bowl would read as a different, tidier place.
    */
   ENDS: {
-    depth: 34,          // how far back from the net they reach
-    cornerGap: 46,      // and how far short of the corners they stop, at both ends
-    columns: 2,
+    standOff: 10,       // grass between the back of the net and the front of the stand
+    columnOff: 12,      // and between the front of the stand and the seats in it
+    columnGap: 13,
+    backMargin: 12,     // enough that somebody swaying in the back seat is still in it
+    columns: 1,         // which is all the room left over runs to, once they can sway
+    cornerGap: 46,      // how far short of the corners they stop, at both ends
+    holeDepth: 18,      // a shallower stand than the sides, so a shallower way out
   },
 
   SEATS: {
@@ -324,7 +328,34 @@ const Renderer = {
     goalAreaDepth: 52,
     goalAreaHeight: 180,
     cornerRadius: 18,
-    netSpacing: 9,           // gap between the strands of the goal netting
+  },
+
+  /*
+   * The goal, seen from directly overhead: two uprights standing on the line, the side
+   * netting running back from them, and the back of the net slung between the stanchions.
+   * Drawing only. The mouth a ball has to cross is CONFIG.PITCH's and nothing here moves
+   * it, which is why a post can be drawn wider than a post without changing a game.
+   */
+  GOAL: {
+    netSpacing: 8,           // gap between the strands of the mesh
+    netSlices: 6,            // bands of shade from the mouth to the back of the net
+    /*
+     * Depth is drawn by lifting the mouth rather than by darkening the back, because the
+     * back of the net is already sitting at the one colour the palette guarantees is off
+     * the surround. Darken past that and the goal stops having a shape at all.
+     */
+    mouthLift: 0.2,
+    strandAlpha: 0.32,       // the mesh where the light still reaches it
+    strandFade: 0.8,         // and how little of it is left at the back
+    barWidth: 5,             // the frame, the same steel the whole way round
+    contactSpread: 5,        // the shade it sits in, which is what gives it thickness
+    contactAlpha: 0.4,
+    backWidth: 3,            // the back of the net is cord, not another bar
+    backAlpha: 0.62,
+    crossbarAlpha: 0.36,     // from overhead the bar lies along the line and hides nothing
+    postRadius: 5,
+    stanchionRadius: 3,
+    rimAlpha: 0.5,
   },
 
   CSS: {
@@ -1007,12 +1038,9 @@ const Renderer = {
       g.fillRect(P.left + i * bandWidth, P.top, bandWidth, P.height);
     }
 
-    // Goal recesses behind each line, netting drawn as crosshatch over the dark.
-    g.fillStyle(C.net, 1);
-    g.fillRect(P.left - P.goalDepth, P.mouthTop, P.goalDepth, P.goalMouth);
-    g.fillRect(P.right, P.mouthTop, P.goalDepth, P.goalMouth);
-    Renderer.crosshatch(g, P.left - P.goalDepth, P.mouthTop, P.goalDepth, P.goalMouth);
-    Renderer.crosshatch(g, P.right, P.mouthTop, P.goalDepth, P.goalMouth);
+    // The netting behind each line, laid down before the chalk so the goal line is drawn
+    // over the front of it rather than stopping short of it.
+    [-1, 1].forEach((dir) => Renderer.drawNet(g, C, dir));
 
     g.lineStyle(3, C.line, 1);
     g.strokeRect(P.left, P.top, P.width, P.height);
@@ -1048,12 +1076,9 @@ const Renderer = {
 
     Renderer.createGround(scene, g);
 
-    // Posts, so the two openings are unmistakable.
-    g.lineStyle(5, C.line, 1);
-    [P.mouthTop, P.mouthBottom].forEach((y) => {
-      g.lineBetween(P.left - P.goalDepth, y, P.left, y);
-      g.lineBetween(P.right, y, P.right + P.goalDepth, y);
-    });
+    // The frames, after the ground: a stand built behind a goal must not be built over
+    // the top of it.
+    [-1, 1].forEach((dir) => Renderer.drawGoalFrame(g, C, dir));
 
     // Last, so the night falls over a ground that is already fully drawn.
     Renderer.createFloodlights(scene, g);
@@ -1064,18 +1089,82 @@ const Renderer = {
   /*
    * Netting: diagonals both ways, clipped to the goal recess. Drawn faintly off the chalk
    * so it reads as mesh at a glance without competing with the lines on the pitch.
+   *
+   * The mesh is laid out from x,y but clipped to `clip` when one is given, which is how a
+   * net can be shaded in bands without the pattern restarting at every seam.
    */
-  crosshatch(g, x, y, w, h) {
-    const M = Renderer.MARKINGS;
-    const step = M.netSpacing;
-    g.lineStyle(1, Renderer.lighten(Renderer.THEME.chalkWhite, 0), 0.22);
+  crosshatch(g, x, y, w, h, alpha, clip) {
+    const step = Renderer.GOAL.netSpacing;
+    const box = clip || { x, y, w, h };
+    g.lineStyle(1, Renderer.THEME.chalkWhite, alpha === undefined ? 0.22 : alpha);
 
     // A diagonal enters the box along the top edge or the left, so run the origin from
     // above the box round to its far side and clip each line to the rectangle.
     for (let d = -h; d < w + h; d += step) {
-      Renderer.clippedLine(g, x + d, y, x + d + h, y + h, x, y, w, h);
-      Renderer.clippedLine(g, x + d, y + h, x + d + h, y, x, y, w, h);
+      Renderer.clippedLine(g, x + d, y, x + d + h, y + h, box.x, box.y, box.w, box.h);
+      Renderer.clippedLine(g, x + d, y + h, x + d + h, y, box.x, box.y, box.w, box.h);
     }
+  },
+
+  /*
+   * The netting, in bands that darken away from the mouth. A flat rectangle is the thing
+   * that makes a goal look painted onto the grass: the far corners of a real net are in
+   * shade, and the strands out there catch almost nothing.
+   */
+  drawNet(g, C, dir) {
+    const P = CONFIG.PITCH;
+    const N = Renderer.GOAL;
+    const lineX = dir < 0 ? P.left : P.right;
+    const outer = Math.min(lineX, lineX + dir * P.goalDepth);
+    const slice = P.goalDepth / N.netSlices;
+
+    for (let i = 0; i < N.netSlices; i += 1) {
+      const t = (i + 0.5) / N.netSlices;              // 0 at the mouth, 1 at the back
+      const near = lineX + dir * i * slice;
+      const x = Math.min(near, near + dir * slice);
+      g.fillStyle(Renderer.lighten(C.net, N.mouthLift * (1 - t)), 1);
+      // Half a pixel of overlap, or the seams show up as hairlines between the bands.
+      g.fillRect(x - 0.5, P.mouthTop, slice + 1, P.goalMouth);
+      Renderer.crosshatch(g, outer, P.mouthTop, P.goalDepth, P.goalMouth,
+        N.strandAlpha * (1 - N.strandFade * t), { x, y: P.mouthTop, w: slice, h: P.goalMouth });
+    }
+  },
+
+  /* The frame itself, which is the only part of a goal that is not netting. */
+  drawGoalFrame(g, C, dir) {
+    const P = CONFIG.PITCH;
+    const N = Renderer.GOAL;
+    const dark = Renderer.THEME.nightBlack;
+    const lineX = dir < 0 ? P.left : P.right;
+    const backX = lineX + dir * P.goalDepth;
+    const posts = [P.mouthTop, P.mouthBottom];
+
+    // Where the frame meets the netting it sits in its own shade. That, rather than any
+    // extra width, is what tells a white line from a steel bar.
+    g.lineStyle(N.barWidth + N.contactSpread, dark, N.contactAlpha);
+    posts.forEach((y) => g.lineBetween(lineX, y, backX, y));
+    g.lineBetween(backX, P.mouthTop, backX, P.mouthBottom);
+
+    g.lineStyle(N.barWidth, C.line, 1);
+    posts.forEach((y) => g.lineBetween(lineX, y, backX, y));
+
+    g.lineStyle(N.backWidth, C.line, N.backAlpha);
+    g.lineBetween(backX, P.mouthTop, backX, P.mouthBottom);
+
+    // The crossbar is directly above the goal line from up here, so it brightens the line
+    // between the posts and stops nothing.
+    g.lineStyle(N.barWidth, C.line, N.crossbarAlpha);
+    g.lineBetween(lineX, P.mouthTop, lineX, P.mouthBottom);
+
+    // Uprights and stanchions, seen end on: the only round things on a football pitch.
+    [[lineX, N.postRadius], [backX, N.stanchionRadius]].forEach(([x, radius]) => {
+      posts.forEach((y) => {
+        g.fillStyle(C.line, 1);
+        g.fillCircle(x, y, radius);
+        g.lineStyle(1, dark, N.rimAlpha);
+        g.strokeCircle(x, y, radius);
+      });
+    });
   },
 
   /* Cohen–Sutherland is overkill here: both ends are clamped and the line is redrawn. */
@@ -1187,32 +1276,46 @@ const Renderer = {
   /*
    * The stands behind each goal. Same idea as the sides turned through ninety degrees:
    * seats in columns rather than rows, and a way out cut into the outer edge.
+   *
+   * Depth is worked out from the seating rather than set, because the space is not
+   * negotiable: 80px behind each goal line, 46 of which is netting. What is left buys a
+   * gap to stand off the net, the seats, and enough wall behind the back one that a
+   * supporter swaying in it is still inside the ground.
    */
   endStands(S) {
     if (!S.ends) return [];
     const P = CONFIG.PITCH;
     const E = Renderer.ENDS;
+    const B = Renderer.BEER;
+    const depth = E.columnOff + (E.columns - 1) * E.columnGap + E.backMargin;
     const netBack = { left: P.left - P.goalDepth, right: P.right + P.goalDepth };
 
     return [
-      { dir: -1, face: netBack.left, back: netBack.left - E.depth },
-      { dir: 1, face: netBack.right, back: netBack.right + E.depth },
+      { dir: -1, netBack: netBack.left },
+      { dir: 1, netBack: netBack.right },
     ].map((end) => {
       const top = P.top + E.cornerGap;
       const bottom = P.bottom - E.cornerGap;
-      const gap = E.depth / (E.columns + 1);
+      const face = end.netBack + end.dir * E.standOff;
+      const back = face + end.dir * depth;
       return {
         dir: end.dir,
-        face: end.face,
-        back: end.back,
+        face,
+        back,
+        depth,
         top,
         bottom,
-        // Nearest the pitch first, so the row behind is the one drawn smaller.
+        // Nearest the pitch first, so the column behind is the one drawn smaller.
         columns: Array.from({ length: E.columns }, (unused, i) => ({
-          x: end.face + end.dir * gap * (i + 1),
+          x: face + end.dir * (E.columnOff + i * E.columnGap),
           scale: Math.pow(Renderer.CROWD.rowScale, i),
         })),
-        exit: { x: end.back - end.dir * (Renderer.BEER.holeDepth / 2), y: (top + bottom) / 2 },
+        exit: {
+          x: back - end.dir * (E.holeDepth / 2),
+          y: (top + bottom) / 2,
+          width: E.holeDepth,
+          height: B.holeWidth,
+        },
       };
     });
   },
@@ -1249,7 +1352,22 @@ const Renderer = {
       // Halfway into the gap, so somebody standing in it is in the wall rather than
       // hovering behind it.
       y: side.back - side.dir * (B.holeDepth / 2),
+      width: B.holeWidth,
+      height: B.holeDepth,
     }));
+  },
+
+  /*
+   * Whether a seat is clear of a doorway. Nobody sits in a doorway and nobody bolts a
+   * seat into one, so the seats there are simply not there. Measured with the longer side
+   * of a seat both ways, which costs a pixel or two and saves knowing which way the seat
+   * is turned.
+   */
+  clearOfDoorway(seat, exit) {
+    const E = Renderer.SEATS;
+    const room = Math.max(E.width, E.height);
+    return Math.abs(seat.x - exit.x) > (exit.width + room) / 2
+      || Math.abs(seat.y - exit.y) > (exit.height + room) / 2;
   },
 
   /*
@@ -1302,33 +1420,33 @@ const Renderer = {
     const height = end.bottom - end.top;
 
     g.fillStyle(mat.wall, 1);
-    g.fillRect(left, end.top, E.depth, height);
+    g.fillRect(left, end.top, end.depth, height);
 
     if (S.material === 'metal') {
       g.lineStyle(1, mat.edge, mat.jointAlpha);
       for (let y = end.top; y <= end.bottom; y += mat.ribEvery) {
-        g.lineBetween(left, y, left + E.depth, y);
+        g.lineBetween(left, y, left + end.depth, y);
       }
     } else {
       // Courses run the way the wall does, so behind a goal they run vertically.
       g.lineStyle(1, mat.edge, mat.jointAlpha);
       let course = 0;
-      for (let x = left; x <= left + E.depth; x += mat.courseEvery) {
+      for (let x = left; x <= left + end.depth; x += mat.courseEvery) {
         g.lineBetween(x, end.top, x, end.bottom);
         const offset = (course % 2) * (mat.brickEvery / 2);
         for (let y = end.top + offset; y <= end.bottom; y += mat.brickEvery) {
-          g.lineBetween(x, y, Math.min(x + mat.courseEvery, left + E.depth), y);
+          g.lineBetween(x, y, Math.min(x + mat.courseEvery, left + end.depth), y);
         }
         course += 1;
       }
     }
 
     // The way out, cut into the back edge.
-    const hx = Math.min(end.back, end.back - end.dir * B.holeDepth);
+    const hx = Math.min(end.back, end.back - end.dir * E.holeDepth);
     g.fillStyle(Renderer.THEME.nightBlack, 1);
-    g.fillRect(hx, end.exit.y - B.holeWidth / 2, B.holeDepth, B.holeWidth);
+    g.fillRect(hx, end.exit.y - B.holeWidth / 2, E.holeDepth, B.holeWidth);
     g.lineStyle(2, mat.edge, 0.85);
-    g.strokeRect(hx, end.exit.y - B.holeWidth / 2, B.holeDepth, B.holeWidth);
+    g.strokeRect(hx, end.exit.y - B.holeWidth / 2, E.holeDepth, B.holeWidth);
 
     // Rail down the front, posts and all.
     g.lineStyle(2, mat.rail, 1);
@@ -1339,18 +1457,14 @@ const Renderer = {
     }
   },
 
+  /* Behind a goal a seat faces along the pitch rather than across it, so it turns too. */
   drawEndSeats(g, end, mat) {
     const E = Renderer.SEATS;
     end.columns.forEach((column) => {
-      Renderer.seatsDown(end, column).forEach((seat) => {
-        // Turned with the stand: a seat behind the goal faces along the pitch, not across it.
-        const w = E.height * seat.scale;
-        const h = E.width * seat.scale;
-        g.fillStyle(mat.seat, 1);
-        g.fillRect(seat.x - w / 2, seat.y - h / 2, w, h);
-        g.lineStyle(1, mat.seatEdge, 0.9);
-        g.strokeRect(seat.x - w / 2, seat.y - h / 2, w, h);
-      });
+      Renderer.seatsDown(end, column)
+        .filter((seat) => Renderer.clearOfDoorway(seat, end.exit))
+        .forEach((seat) => Renderer.drawSeat(g, seat, mat,
+          E.height * seat.scale, E.width * seat.scale));
     });
   },
 
@@ -1417,18 +1531,23 @@ const Renderer = {
     g.lineBetween(left, side.rail, left + width, side.rail);
   },
 
+  /* One seat, the size it is drawn at telling you which way its stand is turned. */
+  drawSeat(g, seat, mat, w, h) {
+    g.fillStyle(mat.seat, 1);
+    g.fillRect(seat.x - w / 2, seat.y - h / 2, w, h);
+    g.lineStyle(1, mat.seatEdge, 0.9);
+    g.strokeRect(seat.x - w / 2, seat.y - h / 2, w, h);
+  },
+
   drawSeats(g, side, mat) {
     const E = Renderer.SEATS;
+    const exits = Renderer.exitsIn(side);
     side.rows.forEach((row) => {
-      side.bands.forEach((band) => {
-        Renderer.seatsIn(band, row).forEach((seat) => {
-          const w = E.width * seat.scale;
-          const h = E.height * seat.scale;
-          g.fillStyle(mat.seat, 1);
-          g.fillRect(seat.x - w / 2, seat.y - h / 2, w, h);
-          g.lineStyle(1, mat.seatEdge, 0.9);
-          g.strokeRect(seat.x - w / 2, seat.y - h / 2, w, h);
-        });
+      side.bands.forEach((band, bandIndex) => {
+        Renderer.seatsIn(band, row)
+          .filter((seat) => Renderer.clearOfDoorway(seat, exits[bandIndex]))
+          .forEach((seat) => Renderer.drawSeat(g, seat, mat,
+            E.width * seat.scale, E.height * seat.scale));
       });
     });
   },
@@ -1445,17 +1564,17 @@ const Renderer = {
       const exits = Renderer.exitsIn(side);
       side.rows.forEach((row) => {
         side.bands.forEach((band, bandIndex) => {
-          Renderer.seatsIn(band, row).forEach((seat) => {
-            places.push({ seat, exit: exits[bandIndex] });
-          });
+          Renderer.seatsIn(band, row)
+            .filter((seat) => Renderer.clearOfDoorway(seat, exits[bandIndex]))
+            .forEach((seat) => places.push({ seat, exit: exits[bandIndex] }));
         });
       });
     });
     Renderer.endStands(S).forEach((end) => {
       end.columns.forEach((column) => {
-        Renderer.seatsDown(end, column).forEach((seat) => {
-          places.push({ seat, exit: end.exit });
-        });
+        Renderer.seatsDown(end, column)
+          .filter((seat) => Renderer.clearOfDoorway(seat, end.exit))
+          .forEach((seat) => places.push({ seat, exit: end.exit }));
       });
     });
     return places;
