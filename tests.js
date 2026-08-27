@@ -570,6 +570,62 @@ const DrunkTests = (() => {
       return { pass: before !== after, detail: Renderer.hex(before) + ' then ' + Renderer.hex(after) };
     });
 
+    group('readability');
+    /* The brief is explicit that facing, ball position and possession must be easier to
+     * read after the design pass, not harder. Possession is the one with nothing else to
+     * infer it from, so it gets checked hardest. */
+    check('the ball carrier is marked, and unmarked when the ball comes loose', () => {
+      const g = startMatch('two');
+      const ring = () => g.children.list.find((o) => o.texture && o.texture.key === 'owner_ring');
+      g.red.sprite.setPosition(CONFIG.PITCH.centreX - 200, CONFIG.PITCH.centreY);
+      g.setOwner(g.red);
+      step(3);
+      const held = ring() && ring().visible;
+
+      // Genuinely loose: dropping possession alone is not enough, a ball still at their
+      // feet is picked straight back up on the next frame.
+      g.setOwner(null);
+      g.ball.setPosition(CONFIG.PITCH.centreX + 300, CONFIG.PITCH.centreY - 200);
+      g.ball.body.setVelocity(0, 0);
+      step(3);
+      const loose = ring() && ring().visible;
+      return { pass: held === true && loose === false, detail: 'held ' + held + ', loose ' + loose };
+    });
+    check('the mark follows whoever has it', () => {
+      const g = startMatch('two');
+      g.red.sprite.setPosition(CONFIG.PITCH.centreX - 200, CONFIG.PITCH.centreY);
+      g.blue.sprite.setPosition(CONFIG.PITCH.centreX + 200, CONFIG.PITCH.centreY);
+      g.setOwner(g.red);
+      step(3);
+      const ring = g.children.list.find((o) => o.texture && o.texture.key === 'owner_ring');
+      const onRed = Math.abs(ring.x - g.red.sprite.x) < 2;
+      g.setOwner(g.blue);
+      step(3);
+      const onBlue = Math.abs(ring.x - g.blue.sprite.x) < 2;
+      return { pass: onRed && onBlue, detail: 'red ' + onRed + ', blue ' + onBlue };
+    });
+    check('turning the possession mark off suppresses it', () => {
+      const g = startMatch('two');
+      const was = Renderer.JUICE.possessionRing.on;
+      Renderer.JUICE.possessionRing.on = false;
+      g.setOwner(g.red);
+      step(3);
+      const ring = g.children.list.find((o) => o.texture && o.texture.key === 'owner_ring');
+      const hidden = !ring || !ring.visible;
+      Renderer.JUICE.possessionRing.on = was;
+      return { pass: hidden, detail: hidden ? '' : 'still showing with the switch off' };
+    });
+    check('facing survives the sway', () => {
+      // Nothing may overwrite facing beyond the capped wobble, or the nose stops telling
+      // you where a kick will go.
+      const g = startMatch('two');
+      g.red.facing = 0;
+      g.red.sprite.body.setVelocity(0, 0);
+      step(4);
+      const drift = Math.abs(Phaser.Math.RadToDeg(g.red.sprite.rotation - g.red.facing));
+      return { pass: drift < 0.01, detail: drift.toFixed(3) + ' degrees off when still' };
+    });
+
     group('hooks');
     check('every announced event has a renderer to receive it', () => {
       const want = ['onFacingChanged', 'onOutcome', 'onGoal', 'onKickoff', 'onKickoffCount',

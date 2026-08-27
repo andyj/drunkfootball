@@ -13,12 +13,18 @@
  *                    physics but never restyles them.
  *
  *   on*              fire-and-forget events. Logic announces what just happened and
- *                    the renderer decides whether to draw anything at all. Several
- *                    are deliberately empty in Phase 1: the vocabulary is defined up
- *                    front so the design pass has a hook for every effect without
- *                    having to edit game logic.
+ *                    the renderer decides whether to draw anything at all. That
+ *                    vocabulary was defined up front in phase 1, which is why the
+ *                    design pass added every effect here without editing a line of
+ *                    game logic.
  *
- * Phase 1 is placeholder shapes on purpose. Everything in this file is disposable.
+ * The look is set by two structures. THEME is seven named colours, which a skin supplies
+ * and everything else derives from. JUICE is every effect behind its own switch, so any
+ * of them can be turned off without touching the code that fires it.
+ *
+ * Readability comes before decoration: facing, ball position and who has possession must
+ * be easier to read with the effects on than with them off, which is why the sway is
+ * capped and the possession ring exists at all.
  */
 const Renderer = {
 
@@ -155,6 +161,9 @@ const Renderer = {
     // barely there and meaty.
     cameraShake: { on: true, passScale: 0.0000045, shootScale: 0.000009, goal: 0.012, ms: 160 },
     drunkSway: { on: true, degrees: 4, periodMs: 900 },
+    // Readability rather than decoration: who has the ball is the one thing you cannot
+    // infer from anything else on the pitch.
+    possessionRing: { on: true, pulse: 0.4, pulseMs: 220 },
     ballTrail: { on: true, minSpeed: 420, everyMs: 28, fadeMs: 260 },
     outcomeLabels: { on: true, size: 58, tiltDeg: 8, overshootMs: 260, holdMs: 420 },
     stumbleJiggle: { on: true, px: 5, shakes: 6 },
@@ -442,6 +451,14 @@ const Renderer = {
       g.strokeCircle(fr, fr, fr - 1);
     });
 
+    // The ring marking whoever has the ball. Baked hollow so the player still reads
+    // through it, and white so the theme's yellow can tint it.
+    const ringR = CONFIG.PLAYER.radius + 9;
+    bake('owner_ring', ringR * 2, ringR * 2, () => {
+      g.lineStyle(3, 0xffffff, 1);
+      g.strokeCircle(ringR, ringR, ringR - 2);
+    });
+
     // Four-pointed star, for the ones circling a stunned player or a frozen keeper.
     // Baked white so it can be tinted to whatever the theme's yellow happens to be.
     bake('star', 14, 14, () => {
@@ -518,8 +535,16 @@ const Renderer = {
       .centerOn(CONFIG.CANVAS.width / 2, CONFIG.CANVAS.height / 2);
   },
 
-  /* Every scene starts the same way: textures baked, camera framed. */
+  /*
+   * Every scene starts the same way: textures baked, camera framed, per-run state cleared.
+   *
+   * That last one matters more than it looks. Phaser reuses the same Scene object across a
+   * restart, so anything parked on it outlives the display objects it refers to. The
+   * possession ring was held that way and came back pointing at a destroyed sprite, which
+   * simply never appeared again.
+   */
   beginScene(scene) {
+    scene.juiceState = null;
     Renderer.makeTextures(scene);
     Renderer.frameCamera(scene);
   },
@@ -1258,7 +1283,12 @@ const Renderer = {
     }
   },
 
-  onKeeperClear(scene, keeper, mate) {},
+  /* A keeper hoofing it clear is a kick like any other, so it gets the same recoil. */
+  onKeeperClear(scene, keeper, mate) {
+    const J = Renderer.JUICE.squashStretch;
+    if (!J.on) return;
+    Renderer.pulse(scene, keeper.sprite, 1 + J.kick * 0.5, 1 - J.kick * 0.4, J.recoverMs);
+  },
 
   /*
    * A frozen keeper is the scoring window, so it has to be readable at a glance rather
@@ -1279,7 +1309,30 @@ const Renderer = {
     keeper.freezeFx = Renderer.orbitStars(scene, keeper.sprite, J.stars, J.orbitPx, 0);
   },
 
-  onPossessionChange(scene, player) {},
+  /*
+   * The ring lives for the whole match and is moved and hidden by onTick, because
+   * possession changes far more often than the ring needs rebuilding. This hook only
+   * announces the change, with a pop so a tackle or an interception is felt rather than
+   * merely being true.
+   */
+  ownerRing(scene) {
+    if (!scene.juiceState) scene.juiceState = { nextTrailAt: 0 };
+    if (!scene.juiceState.ring) {
+      scene.juiceState.ring = scene.add.image(0, 0, 'owner_ring')
+        .setTint(Renderer.THEME.lagerYellow)
+        .setDepth(Renderer.DEPTH.player - 1)
+        .setVisible(false);
+    }
+    return scene.juiceState.ring;
+  },
+
+  onPossessionChange(scene, player) {
+    const J = Renderer.JUICE.possessionRing;
+    if (!J.on || !player) return;
+    const ring = Renderer.ownerRing(scene);
+    ring.setPosition(player.sprite.x, player.sprite.y).setVisible(true);
+    Renderer.pulse(scene, ring, 1 + J.pulse, 1 + J.pulse, J.pulseMs);
+  },
 
   onStumble(scene, player, ms) {
     const J = Renderer.JUICE.stumbleJiggle;
@@ -1344,6 +1397,16 @@ const Renderer = {
         player.sprite.setRotation(player.facing + (moving ? Math.sin(phase) * amplitude : 0));
       });
     }
+
+    // Possession changes hands constantly, so the ring is moved rather than rebuilt, and
+    // hidden the moment the ball is loose. A stale ring would be worse than none: it would
+    // say someone still has it.
+    const ring = Renderer.ownerRing(scene);
+    const owner = J.possessionRing.on ? view.state.owner : null;
+    // Switched off counts as nobody: otherwise flicking it off mid-match leaves the last
+    // ring stranded on a player who may since have lost the ball.
+    if (owner) ring.setPosition(owner.sprite.x, owner.sprite.y).setVisible(true);
+    else ring.setVisible(false);
 
     if (J.ballTrail.on && view.ball.body.speed > J.ballTrail.minSpeed
       && time >= scene.juiceState.nextTrailAt) {
