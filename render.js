@@ -398,22 +398,71 @@ const Renderer = {
   },
 
   /*
-   * And snow still coming down, on the matches that get weather. Each flake falls on a
-   * tween rather than off the clock, so it keeps falling in the shootout too, where
-   * nothing calls onTick.
+   * What is coming down, and how fast. Each mote falls on a tween rather than off the
+   * clock, so the weather keeps going in the shootout too, where nothing calls onTick.
+   *
+   * Rain is thin, fast and nearly straight; snow is fat, slow and all over the place. Wind
+   * is not falling at all: it is blown across, which is why it has an axis of its own.
    */
-  SNOW: {
-    flakes: 70,
-    radiusMin: 1.2,
-    radiusMax: 2.8,
-    speedMin: 90,            // px a second
-    speedMax: 210,
-    driftMax: 40,            // and how far sideways it gets on the way down
-    alphaMin: 0.5,
-    alphaMax: 0.95,
+  FALLING: {
+    snow: {
+      texture: 'flake',
+      motes: 70,
+      aspect: 1,             // a flake is a dot; a drop and a gust are streaks
+      sizeMin: 2.4,
+      sizeMax: 5.6,
+      speedMin: 90,          // px a second
+      speedMax: 210,
+      driftMax: 40,          // and how far sideways it gets on the way down
+      alphaMin: 0.5,
+      alphaMax: 0.95,
+    },
+    rainy: {
+      texture: 'raindrop',
+      motes: 150,
+      aspect: 0.22,
+      sizeMin: 9,
+      sizeMax: 17,
+      speedMin: 780,
+      speedMax: 1150,
+      driftMax: 130,
+      alphaMin: 0.25,
+      alphaMax: 0.5,
+    },
+    windy: {
+      texture: 'gust',
+      motes: 34,
+      aspect: 0.13,
+      sizeMin: 14,
+      sizeMax: 34,
+      speedMin: 420,
+      speedMax: 820,
+      driftMax: 60,
+      alphaMin: 0.16,
+      alphaMax: 0.34,
+      across: true,          // blown from one side to the other rather than falling
+    },
   },
-  /* Whether it is snowing on the match being played, rolled when the pitch is drawn. */
-  snowing: false,
+
+  /*
+   * Fog: a flat haze over the lot, and a few banks of it drifting through. Baked soft
+   * rather than drawn, because a circle at one alpha is a plate, not a cloud.
+   */
+  FOG: {
+    wash: 0.17,
+    banks: 8,
+    sizeMin: 220,
+    sizeMax: 460,
+    alphaMin: 0.14,
+    alphaMax: 0.3,
+    crossMsMin: 24000,
+    crossMsMax: 46000,
+    rings: 14,               // how many steps the soft edge is baked in
+  },
+
+  /* What it is doing today, rolled when the pitch is drawn, and which way it is blowing. */
+  weather: 'sunny',
+  windAngle: 0,
 
   /*
    * What a kick takes out of a park pitch. Mud is mud whatever the kits are, the same way
@@ -505,7 +554,11 @@ const Renderer = {
     stumbleJiggle: { on: true, px: 5, shakes: 6 },
     faceplant: { on: true, spinDeg: 90, stars: 4, orbitPx: 22 },
     keeperFreeze: { on: true, stars: 3, orbitPx: 16 },
-    goalCelebration: { on: true, flashMs: 140, particles: 46, bannerMs: 900 },
+    goalCelebration: {
+      on: true, flashMs: 140, particles: 46, bannerMs: 900,
+      /* And the crowd, who are the only ones in the ground with nothing else to do. */
+      crowdJump: 1.5, crowdJumpMs: 150, crowdJumps: 3, crowdStaggerMs: 260,
+    },
     kickoffCountdown: { on: true, size: 92 },
     penaltyDrama: { on: true },
     fullTimeConfetti: { on: true, pieces: 90 },
@@ -588,8 +641,13 @@ const Renderer = {
       key: 'frozen',
       name: 'FROZEN',
       blurb: 'frost underfoot, everything slides a bit further',
-      /* The only skin with weather. Snow lies on it always and falls on some of it. */
+      /*
+       * Snow lies on it always, and it insists on its own share of the weather: a frozen
+       * pitch snows a third of the time whatever the general table says, and the rest of
+       * the table divides up what is left.
+       */
       snowy: true,
+      weather: { snow: 1 / 3 },
       colours: {
         pitchGreen: 0x7f9c88, stripe: 0x8caa95, chalkWhite: 0xffffff,
         redTeam: 0xc0392b, blueTeam: 0x2c5fa8,
@@ -749,7 +807,7 @@ const Renderer = {
    */
   PALETTE_DEPENDENT_TEXTURES: [
     'player_red', 'player_blue', 'keeper_red', 'keeper_blue', 'ball', 'referee', 'flake',
-    'hand_red', 'hand_blue',
+    'hand_red', 'hand_blue', 'raindrop', 'gust', 'fogbank',
   ],
   paletteVersion: 0,
   bakedVersion: -1,
@@ -872,10 +930,32 @@ const Renderer = {
       }
     });
 
-    // A snowflake, which at this size is a dot and is drawn as one.
+    // A snowflake, which at this size is a dot and is drawn as one; a raindrop, which is
+    // a streak; and a gust, which is a longer, fainter one lying the other way.
     bake('flake', 8, 8, () => {
       g.fillStyle(Renderer.THEME.chalkWhite, 1);
       g.fillCircle(4, 4, 3.5);
+    });
+    bake('raindrop', 3, 14, () => {
+      g.fillStyle(Renderer.THEME.chalkWhite, 1);
+      g.fillRect(0, 0, 3, 14);
+    });
+    bake('gust', 24, 3, () => {
+      g.fillStyle(Renderer.THEME.chalkWhite, 1);
+      g.fillRect(0, 0, 24, 3);
+    });
+
+    /*
+     * A bank of fog: rings from the middle out, each one a shade fainter than the last, so
+     * its edge fades instead of stopping. Baked once and stretched into whatever shape a
+     * bank happens to be.
+     */
+    const fogR = 64;
+    bake('fogbank', fogR * 2, fogR * 2, () => {
+      for (let i = Renderer.FOG.rings; i > 0; i -= 1) {
+        g.fillStyle(Renderer.THEME.chalkWhite, 1 / Renderer.FOG.rings);
+        g.fillCircle(fogR, fogR, (fogR * i) / Renderer.FOG.rings);
+      }
     });
 
     // The ring marking whoever has the ball. Baked hollow so the player still reads
@@ -1283,8 +1363,8 @@ const Renderer = {
     // The grass itself, and the snow lying in it. Both under the chalk, so a line is a
     // line however deep the snow is.
     Renderer.drawGrass(g);
-    const skin = Renderer.skinNow();
-    if (skin && skin.snowy) Renderer.drawLyingSnow(g);
+    const lying = Renderer.skinNow();
+    if (lying && lying.snowy) Renderer.drawLyingSnow(g);
 
     // The netting behind each line, laid down before the chalk so the goal line is drawn
     // over the front of it rather than stopping short of it.
@@ -1328,9 +1408,9 @@ const Renderer = {
     // the top of it.
     [-1, 1].forEach((dir) => Renderer.drawGoalFrame(g, C, dir));
 
-    // Last, so the night falls over a ground that is already fully drawn.
+    // Last, so the weather comes down over a ground that is already fully drawn.
     Renderer.createFloodlights(scene, g);
-    Renderer.createSnow(scene);
+    Renderer.createWeather(scene);
 
     return g;
   },
@@ -1419,65 +1499,176 @@ const Renderer = {
   },
 
   /*
-   * Weather, rolled once when the pitch is drawn, the same way the ground is. Only the
-   * frozen skin has any: everything else is played in whatever it is played in.
-   *
-   * game.js reads the answer rather than the roll, because snow on ice is not ice and what
-   * you are playing on is its business.
+   * The odds on today, with anything the skin insists on folded in: a frozen pitch snows a
+   * third of the time whatever the general chance is, and the rest of the table shares out
+   * what is left of the hundred between them in the proportions it already had.
    */
-  rollWeather() {
+  weatherOdds() {
+    const base = CONFIG.WEATHER.chances;
     const skin = Renderer.skinNow();
-    Renderer.snowing = !!(skin && skin.snowy) && Math.random() < CONFIG.WEATHER.snowChance;
-    return Renderer.snowing;
+    const forced = (skin && skin.weather) || {};
+    const keys = Object.keys(base);
+
+    let fixed = 0;
+    let loose = 0;
+    keys.forEach((key) => {
+      if (forced[key] === undefined) loose += base[key];
+      else fixed += forced[key];
+    });
+
+    const room = Math.max(0, 1 - fixed);
+    const odds = {};
+    keys.forEach((key) => {
+      odds[key] = forced[key] === undefined
+        ? (loose > 0 ? (base[key] / loose) * room : 0)
+        : forced[key];
+    });
+    return odds;
   },
 
   /*
-   * The flakes. Each one falls from wherever it starts to below the bottom of the screen
-   * and then goes round again from above the top, so the first second of a match has snow
-   * in the middle of it rather than a clear sky filling up.
+   * Rolled once when the pitch is drawn, the same way the ground is. game.js reads the
+   * answer rather than the roll, because what the weather does to the football is its
+   * business and what it looks like is this file's.
    */
-  createSnow(scene) {
-    scene.snow = null;
-    if (!Renderer.snowing) return null;
-
-    const S = Renderer.SNOW;
-    const flakes = [];
-    for (let i = 0; i < S.flakes; i += 1) {
-      const r = S.radiusMin + Math.random() * (S.radiusMax - S.radiusMin);
-      const flake = scene.add.image(
-        Math.random() * CONFIG.CANVAS.width,
-        Math.random() * CONFIG.CANVAS.height,
-        'flake',
-      )
-        .setDisplaySize(r * 2, r * 2)
-        .setAlpha(S.alphaMin + Math.random() * (S.alphaMax - S.alphaMin))
-        // In front of the football and behind anything written about it.
-        .setDepth(Renderer.DEPTH.label - 1);
-      flake.drift = (Math.random() - 0.5) * S.driftMax * 2;
-      flake.speed = S.speedMin + Math.random() * (S.speedMax - S.speedMin);
-      Renderer.snowFall(scene, flake, true);
-      flakes.push(flake);
-    }
-    scene.snow = flakes;
-    return flakes;
+  rollWeather() {
+    const odds = Renderer.weatherOdds();
+    let roll = Math.random();
+    Renderer.weather = 'sunny';
+    Object.keys(odds).some((key) => {
+      roll -= odds[key];
+      if (roll <= 0) {
+        Renderer.weather = key;
+        return true;
+      }
+      return false;
+    });
+    // Which way it is blowing, when it is blowing: along the pitch either way, give or
+    // take, because a wind straight up the screen would only ever push the ball out.
+    Renderer.windAngle = (Math.random() < 0.5 ? 0 : Math.PI)
+      + (Math.random() - 0.5) * Phaser.Math.DegToRad(50);
+    return Renderer.weather;
   },
 
-  /* One flake's fall: the first one part way down, every one after it from the top. */
-  snowFall(scene, flake, first) {
-    const bottom = CONFIG.CANVAS.height + 8;
-    if (!first) flake.y = -8;
-    const fall = (bottom - flake.y) / flake.speed;
-    // Blown sideways on the way down, but not off the edge of the world: a flake that
-    // leaves the screen is a flake nobody sees again until its next lap.
-    const drift = Math.min(CONFIG.CANVAS.width, Math.max(0, flake.x + flake.drift * fall));
+  /*
+   * Whatever is coming down today. Each mote starts wherever it happens to be rather than
+   * at the top, so the first second of a match is already weather rather than a clear sky
+   * filling up, and every one after that comes round from the edge it blew in from.
+   */
+  createWeather(scene) {
+    scene.weatherMotes = null;
+    scene.fog = null;
+    if (Renderer.weather === 'foggy') {
+      scene.fog = Renderer.createFog(scene);
+      return scene.fog;
+    }
+
+    const art = Renderer.FALLING[Renderer.weather];
+    if (!art) return null;
+
+    const motes = [];
+    for (let i = 0; i < art.motes; i += 1) {
+      const size = art.sizeMin + Math.random() * (art.sizeMax - art.sizeMin);
+      const mote = scene.add.image(
+        Math.random() * CONFIG.CANVAS.width,
+        Math.random() * CONFIG.CANVAS.height,
+        art.texture,
+      )
+        .setAlpha(art.alphaMin + Math.random() * (art.alphaMax - art.alphaMin))
+        // In front of the football and behind anything written about it.
+        .setDepth(Renderer.DEPTH.label - 1);
+      // Along the way it is going: a drop is long down the screen and a gust is long
+      // across it, and both of them are thin the other way.
+      mote.setDisplaySize(
+        art.across ? size : size * art.aspect,
+        art.across ? size * art.aspect : size,
+      );
+      mote.art = art;
+      mote.drift = (Math.random() - 0.5) * art.driftMax * 2;
+      mote.speed = art.speedMin + Math.random() * (art.speedMax - art.speedMin);
+      // Blown the way the wind is blowing, so the streaks and the ball agree.
+      mote.way = art.across && Math.cos(Renderer.windAngle) < 0 ? -1 : 1;
+      if (art.across) mote.setRotation(0);
+      Renderer.blowMote(scene, mote, true);
+      motes.push(mote);
+    }
+    scene.weatherMotes = motes;
+    return motes;
+  },
+
+  /*
+   * One mote's trip across the screen: the first from wherever it was put, every one after
+   * it from the edge. Rain and snow fall down the screen; a gust crosses it.
+   */
+  blowMote(scene, mote, first) {
+    const W = CONFIG.CANVAS.width;
+    const H = CONFIG.CANVAS.height;
+    const art = mote.art;
+    const edge = 12;
+
+    let to;
+    let gone;
+    if (art.across) {
+      if (!first) mote.x = mote.way > 0 ? -edge : W + edge;
+      gone = Math.abs((mote.way > 0 ? W + edge : -edge) - mote.x);
+      to = {
+        x: mote.way > 0 ? W + edge : -edge,
+        y: Math.min(H, Math.max(0, mote.y + mote.drift * (gone / mote.speed))),
+      };
+    } else {
+      if (!first) mote.y = -edge;
+      gone = (H + edge) - mote.y;
+      to = {
+        // Sideways on the way down, but not off the edge of the world: a flake that leaves
+        // the screen is one nobody sees again until its next lap.
+        x: Math.min(W, Math.max(0, mote.x + mote.drift * (gone / mote.speed))),
+        y: H + edge,
+      };
+    }
+
     return scene.tweens.add({
-      targets: flake,
-      y: bottom,
-      x: drift,
-      duration: fall * 1000,
+      targets: mote,
+      x: to.x,
+      y: to.y,
+      duration: (gone / mote.speed) * 1000,
       repeat: first ? 0 : -1,
-      onComplete: first ? () => Renderer.snowFall(scene, flake, false) : undefined,
+      onComplete: first ? () => Renderer.blowMote(scene, mote, false) : undefined,
     });
+  },
+
+  /*
+   * Fog: a flat haze over the whole ground, and banks of it drifting through. The banks are
+   * baked soft, because a circle at one alpha is a plate rather than a cloud.
+   */
+  createFog(scene) {
+    const F = Renderer.FOG;
+    const W = CONFIG.CANVAS.width;
+    const H = CONFIG.CANVAS.height;
+    const parts = [];
+
+    parts.push(scene.add.image(W / 2, H / 2, 'px')
+      .setDisplaySize(W, H)
+      .setTint(Renderer.THEME.chalkWhite)
+      .setAlpha(F.wash)
+      .setDepth(Renderer.DEPTH.label - 1));
+
+    for (let i = 0; i < F.banks; i += 1) {
+      const size = F.sizeMin + Math.random() * (F.sizeMax - F.sizeMin);
+      const bank = scene.add.image(Math.random() * W, Math.random() * H, 'fogbank')
+        .setDisplaySize(size, size * (0.5 + Math.random() * 0.4))
+        .setAlpha(F.alphaMin + Math.random() * (F.alphaMax - F.alphaMin))
+        .setDepth(Renderer.DEPTH.label - 1);
+      const cross = F.crossMsMin + Math.random() * (F.crossMsMax - F.crossMsMin);
+      scene.tweens.add({
+        targets: bank,
+        x: bank.x + W,
+        duration: cross,
+        repeat: -1,
+        onRepeat: () => { bank.x = -size; },
+      });
+      parts.push(bank);
+    }
+    return parts;
   },
 
   /*
@@ -2262,6 +2453,37 @@ const Renderer = {
   },
 
   /*
+   * Everybody up. A goal is the one moment the crowd is worth looking at, so every one of
+   * them jumps: from directly above, a jump is a supporter getting bigger and smaller
+   * again, which is also the one thing about them nothing else is already using. The sway
+   * has their x and a trip to the bar has both, so scale is the only property free.
+   *
+   * Staggered, because two hundred people leaving the ground at the same instant is a
+   * wave rather than a crowd.
+   */
+  crowdCelebrate(scene) {
+    const J = Renderer.JUICE.goalCelebration;
+    if (!J.on) return 0;
+    const fans = scene.children.list.filter((o) => o.texture && o.texture.key === 'fan');
+    fans.forEach((fan) => {
+      const seated = fan.scaleX;
+      scene.tweens.add({
+        targets: fan,
+        scale: seated * J.crowdJump,
+        duration: J.crowdJumpMs,
+        delay: Math.random() * J.crowdStaggerMs,
+        yoyo: true,
+        repeat: J.crowdJumps - 1,
+        ease: 'Quad.easeOut',
+        // Put back by hand: a tween interrupted by the next goal would leave somebody
+        // stuck at the top of their jump for the rest of the match.
+        onComplete: () => fan.setScale(seated),
+      });
+    });
+    return fans.length;
+  },
+
+  /*
    * One timer for the whole crowd rather than one each: at this scale a ground can hold two
    * hundred people, and two hundred timers to make six of them stand up is a poor trade.
    */
@@ -2880,6 +3102,7 @@ const Renderer = {
 
   onGoal(scene, team, scores) {
     Sound.cheer(Renderer.crowdLoudness(scene));
+    Renderer.crowdCelebrate(scene);
 
     const J = Renderer.JUICE.goalCelebration;
     const teamColour = team === 'red' ? Renderer.THEME.redTeam : Renderer.THEME.blueTeam;

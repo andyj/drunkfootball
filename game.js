@@ -75,15 +75,40 @@ const CONFIG = {
   SURFACES: {
     grass: { grip: 1, ballDragScale: 1 },
     ice: { grip: 0.12, ballDragScale: 0.55 },
-    /* Ice with snow coming down on it: still slippery, but it grabs a little. */
-    snow: { grip: 0.34, ballDragScale: 0.78 },
     /* A park pitch. Starts as grass and gets worse everywhere the ball is kicked. */
     mud: { grip: 1, ballDragScale: 1, wears: true },
   },
   SURFACE_BY_SKIN: { frozen: 'ice', sunday: 'mud' },
 
-  /* Frozen is the only skin with weather, and it snows on one match in three. */
-  WEATHER: { snowChance: 1 / 3 },
+  WEATHER: {
+    /* One roll a match, and they add up to a hundred. */
+    chances: { sunny: 0.40, rainy: 0.25, windy: 0.20, foggy: 0.10, snow: 0.05 },
+
+    /*
+     * And what each of them does to the football. Anything not named here does nothing to
+     * it: fog is between you and the pitch rather than on it, and sunshine is the game as
+     * it has always been.
+     *
+     *   ballDragScale  how hard the ground is on a rolling ball
+     *   gripFloor      the least grip there is, however slippery the ground underneath
+     *   wearScale      how much faster a pitch that wears gives up
+     *   ballPush       a wind, in px/s^2, on a ball that is already moving
+     */
+    EFFECTS: {
+      sunny: {},
+      foggy: {},
+      /* Wet grass: the ball skids on and a soft pitch cuts up twice as fast. */
+      rainy: { ballDragScale: 0.75, wearScale: 1.8 },
+      /*
+       * Blown along, but only once it is rolling: a wind that can shift a ball off the
+       * centre spot is a wind that scores on its own. carry is how far sideways it takes
+       * a moving ball in a second.
+       */
+      windy: { carry: 55, carryAbove: 40 },
+      /* Lying snow deadens it, and it grips where bare ice would not. */
+      snow: { ballDragScale: 1.3, gripFloor: 0.34 },
+    },
+  },
 
   /*
    * What a kick takes out of a park pitch. Every swing tears a bit more out of the ground
@@ -1071,21 +1096,26 @@ class GameScene extends Phaser.Scene {
     this.botCfg = CONFIG.BOT.LEVELS[this.difficulty];
 
     /*
-     * The chosen skin decides what you are playing on, and it is decided again in create
-     * once the weather has been rolled. Set here as well because a scene can be asked
-     * about its surface before its pitch exists.
+     * The chosen skin decides what you are playing on, and both this and the weather are
+     * decided again in create, once the pitch has rolled what today is doing. Set here as
+     * well because a scene can be asked about either before its pitch exists.
      */
     this.surface = this.surfaceNow();
+    this.weather = this.weatherNow();
+  }
+
+  /* Anything unmapped is grass. What the sky is doing to it is weatherNow's business. */
+  surfaceNow() {
+    return CONFIG.SURFACES[CONFIG.SURFACE_BY_SKIN[Renderer.activeSkin]]
+      || CONFIG.SURFACES.grass;
   }
 
   /*
-   * Anything unmapped is grass. Snow is the exception that is not the skin's: it is rolled
-   * with the pitch, and snow lying on ice is not ice.
+   * What today is doing to the football. Rolled with the pitch rather than here, because
+   * the weather is something you can see and this is only what it costs.
    */
-  surfaceNow() {
-    if (Renderer.snowing) return CONFIG.SURFACES.snow;
-    return CONFIG.SURFACES[CONFIG.SURFACE_BY_SKIN[Renderer.activeSkin]]
-      || CONFIG.SURFACES.grass;
+  weatherNow() {
+    return CONFIG.WEATHER.EFFECTS[Renderer.weather] || {};
   }
 
   create() {
@@ -1095,7 +1125,15 @@ class GameScene extends Phaser.Scene {
     Renderer.createPitch(this);
     // After the pitch, because drawing it is what rolls the weather.
     this.surface = this.surfaceNow();
+    this.weather = this.weatherNow();
     this.wear = this.surface.wears ? this.freshPitch() : null;
+    // Which way it is blowing, if it is: the same way the streaks are going.
+    this.wind = this.weather.carry
+      ? {
+        x: Math.cos(Renderer.windAngle) * this.weather.carry,
+        y: Math.sin(Renderer.windAngle) * this.weather.carry,
+      }
+      : null;
 
     this.physics.world.setBounds(0, 0, CONFIG.CANVAS.width, CONFIG.CANVAS.height);
     this.pitchBounds = new Phaser.Geom.Rectangle(P.left, P.top, P.width, P.height);
@@ -1124,7 +1162,7 @@ class GameScene extends Phaser.Scene {
     this.bot = this.blue.isBot ? this.makeBot(this.blue) : null;
 
     this.ball = Renderer.createBall(this, P.centreX, P.centreY);
-    const ballDrag = CONFIG.BALL.drag * this.surface.ballDragScale;
+    const ballDrag = this.ballDragNow();
     this.ball.body.setDrag(ballDrag, ballDrag);
     this.ball.body.setBounce(CONFIG.BALL.bounce, CONFIG.BALL.bounce);
     this.ball.body.setMaxVelocity(CONFIG.BALL.maxSpeed, CONFIG.BALL.maxSpeed);
@@ -1347,6 +1385,23 @@ class GameScene extends Phaser.Scene {
       const drag = this.ballDragNow();
       this.ball.body.setDrag(drag, drag);
     }
+
+    /*
+     * And the wind, which carries a moving ball sideways rather than pushing it. Two goes
+     * at this went in the bin, and both of them are Arcade being Arcade.
+     *
+     * As an acceleration it stopped applying drag to that axis at all, so the ball never
+     * slowed down: one pass rolled the length of the pitch, came back, and was still going
+     * four hundred frames later. As a nudge to the velocity it did nothing whatsoever,
+     * because drag comes off each axis before anything is moved, and a sideways velocity
+     * smaller than one frame of drag is wiped before it has moved the ball at all.
+     * Carrying the ball is the version the physics cannot argue with.
+     */
+    if (this.wind && this.ball.body.speed > this.weather.carryAbove) {
+      const blown = delta / 1000;
+      this.ball.x += this.wind.x * blown;
+      this.ball.y += this.wind.y * blown;
+    }
     this.readInput(time);
     this.players.forEach((p) => this.movePlayer(p, time));
     this.keepers.forEach((k) => this.updateKeeper(k, time));
@@ -1482,7 +1537,8 @@ class GameScene extends Phaser.Scene {
    * back is the whole reason to play on ice.
    */
   steer(body, targetX, targetY) {
-    const grip = this.surface.grip;
+    // Snow on ice still grips more than ice does.
+    const grip = Math.max(this.surface.grip, (this.weather && this.weather.gripFloor) || 0);
     if (grip >= 1) {
       body.setVelocity(targetX, targetY);
       return;
@@ -1724,8 +1780,9 @@ class GameScene extends Phaser.Scene {
     if (now < player.stunnedUntil) return;
 
     // Every swing takes something out of the ground it was taken from, whether or not it
-    // connects with anything. A whiff is a divot too.
-    this.tearPitch(player.sprite.x, player.sprite.y);
+    // connects with anything. A whiff is a divot too, and a wet pitch gives up faster.
+    this.tearPitch(player.sprite.x, player.sprite.y,
+      CONFIG.WEAR.perKick * (this.weather.wearScale || 1));
 
     const outcome = rollOutcome(this.drunkTable(player));
 
@@ -1932,27 +1989,44 @@ class GameScene extends Phaser.Scene {
       player.walked += Phaser.Math.Distance.Between(player.trodX, player.trodY, at.x, at.y);
       player.trodX = at.x;
       player.trodY = at.y;
+      const stride = W.perStride * (this.weather.wearScale || 1);
       while (player.walked >= W.strideEvery) {
         player.walked -= W.strideEvery;
-        this.tearPitch(at.x, at.y, W.perStride);
+        this.tearPitch(at.x, at.y, stride);
       }
     });
   }
 
   /* What the ball is rolling through, right where it is. */
   ballDragNow() {
-    const base = CONFIG.BALL.drag * this.surface.ballDragScale;
+    const weather = (this.weather && this.weather.ballDragScale) || 1;
+    const base = CONFIG.BALL.drag * this.surface.ballDragScale * weather;
     if (!this.wear) return base;
     return base * (1 + this.wearAt(this.ball.x, this.ball.y) * (CONFIG.WEAR.dragScale - 1));
   }
 
   /* --------------------------------------------------------- match flow */
 
+  /*
+   * In the mouth and touching the line is in.
+   *
+   * The rule was the whole ball over the line, which is the real one and which left a band
+   * behind each keeper about a ball wide: a ball that stopped in it was not a goal, and
+   * nobody could reach it either, because a keeper is a solid body standing in the only
+   * way to it. The match sat there until the clock ran out. Reading the near edge of the
+   * ball instead closes that band from the goal side, and anywhere it can rest that is not
+   * over the line is a ball touching the keeper, which he clears.
+   *
+   * The mouth still has to be checked now, because the ball can lie against the wall
+   * either side of the goal with its edge on the line, and that is not a goal.
+   */
   checkGoal(now) {
     const P = CONFIG.PITCH;
     const r = CONFIG.BALL.radius;
-    if (this.ball.x + r <= P.left) { this.scoreGoal('blue', now); return true; }
-    if (this.ball.x - r >= P.right) { this.scoreGoal('red', now); return true; }
+    const inMouth = this.ball.y >= P.mouthTop && this.ball.y <= P.mouthBottom;
+    if (!inMouth) return false;
+    if (this.ball.x - r <= P.left) { this.scoreGoal('blue', now); return true; }
+    if (this.ball.x + r >= P.right) { this.scoreGoal('red', now); return true; }
     return false;
   }
 

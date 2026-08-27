@@ -1149,6 +1149,44 @@ const DrunkTests = (() => {
     });
 
     group('keeper');
+    check('a ball that gets behind him goes in rather than sitting there', () => {
+      /*
+       * Written the day a match ran out its clock with the ball parked between a keeper
+       * and his own goal line: not over it, so not a goal, and not reachable either,
+       * because a keeper is a solid body standing in the only way to it.
+       */
+      const P = CONFIG.PITCH;
+      const g = startMatch('two');
+      const before = g.state.scores.blue;
+      g.setOwner(null);
+      g.state.recaptureLockUntil = g.time.now + 99999;
+      // Behind him, on the line, going nowhere.
+      g.ball.body.reset(P.left + 4, P.centreY);
+      g.ball.body.setVelocity(0, 0);
+      let guard = 0;
+      while (g.state.phase === 'play' && guard++ < 30) step(1);
+      return {
+        pass: g.state.scores.blue === before + 1,
+        detail: g.state.scores.blue === before + 1
+          ? 'given after ' + guard + ' frames' : 'still sat there after ' + guard + ' frames',
+      };
+    });
+    check('a ball lying against the wall beside the goal is not one', () => {
+      // The mouth is 150px of a 600px line. Touching the line beside it is touching a wall.
+      const P = CONFIG.PITCH;
+      const g = startMatch('two');
+      const before = g.state.scores.blue;
+      g.setOwner(null);
+      g.state.recaptureLockUntil = g.time.now + 99999;
+      g.ball.body.reset(P.left + 4, P.mouthTop - 60);
+      g.ball.body.setVelocity(0, 0);
+      for (let i = 0; i < 12; i += 1) step(1);
+      return {
+        pass: g.state.scores.blue === before,
+        detail: g.state.scores.blue === before ? 'no goal given, 60px above the mouth'
+          : 'a goal was given off the wall',
+      };
+    });
     check('neither of them is asleep when play starts', () => {
       /*
        * A keeper's freeze runs on a clock of its own, and that clock used to run through
@@ -2744,6 +2782,54 @@ const DrunkTests = (() => {
       };
     });
 
+    group('the crowd');
+
+    check('they all go up when somebody scores', () => {
+      /*
+       * A goal is the one moment the crowd is worth looking at. From directly above a jump
+       * is a supporter getting bigger and smaller again, which is also the only thing about
+       * them nothing else is using: the sway has their x and a trip to the bar has both.
+       */
+      const g = startMatch('two');
+      const fans = g.children.list.filter((o) => o.texture && o.texture.key === 'fan');
+      const seated = fans.map((f) => f.scaleX);
+      const jumped = Renderer.crowdCelebrate(g);
+      const jumping = fans.filter((f) => g.tweens.getTweensOf(f).length > 1);
+      return {
+        pass: fans.length > 0 && jumped === fans.length && jumping.length === fans.length
+          && seated.every((sc) => sc > 0),
+        detail: jumped + ' of ' + fans.length + ' up, and ' + jumping.length
+          + ' of them with a jump on top of their sway',
+      };
+    });
+    check('and they come back down again', () => {
+      // A jump left half finished by the next goal would leave somebody stuck at the top
+      // of it for the rest of the match.
+      const g = startMatch('two');
+      const fan = g.children.list.find((o) => o.texture && o.texture.key === 'fan');
+      const seated = fan.scaleX;
+      Renderer.crowdCelebrate(g);
+      const jump = g.tweens.getTweensOf(fan).find((t) => t !== fan.swayTween);
+      if (jump) jump.complete();
+      return {
+        pass: !!jump && Math.abs(fan.scaleX - seated) < 1e-6,
+        detail: !jump ? 'nobody jumped' : 'back to ' + fan.scaleX.toFixed(3)
+          + ' from a seat at ' + seated.toFixed(3),
+      };
+    });
+    check('a goal sets them off', () => {
+      const g = startMatch('two');
+      const was = Renderer.crowdCelebrate;
+      let cheered = 0;
+      Renderer.crowdCelebrate = () => { cheered += 1; return 0; };
+      try {
+        g.scoreGoal('red', g.time.now);
+      } finally {
+        Renderer.crowdCelebrate = was;
+      }
+      return { pass: cheered === 1, detail: cheered + ' celebrations for one goal' };
+    });
+
     group('the referee');
 
     check('he stands off the pitch, and on the screen', () => {
@@ -3225,7 +3311,8 @@ const DrunkTests = (() => {
       const wasSkin = Renderer.activeSkin;
       Renderer.applySkin('sunday');
       const P = CONFIG.PITCH;
-      const g = startMatch('two');
+      // In the sun: rain has its own say on the drag and this is about the ground.
+      const g = matchInWeather('sunny');
       for (let i = 0; i < 50; i += 1) g.tearPitch(P.centreX, P.centreY);
       const worst = g.wearAt(P.centreX, P.centreY);
       g.ball.setPosition(P.centreX, P.centreY);
@@ -3247,7 +3334,8 @@ const DrunkTests = (() => {
       const wasSkin = Renderer.activeSkin;
       Renderer.applySkin('sunday');
       const P = CONFIG.PITCH;
-      const g = startMatch('two');
+      // In the sun, so what is being measured is the ground rather than the weather.
+      const g = matchInWeather('sunny');
       const lane = P.centreY - 150;
       const from = P.left + 120;
       // Out of the way, and left there: a player who picks the ball up ends the roll.
@@ -3306,106 +3394,202 @@ const DrunkTests = (() => {
 
     group('weather');
 
-    check('it snows on about one frozen match in three', () => {
-      const wasSkin = Renderer.activeSkin;
-      const was = Renderer.snowing;
-      Renderer.applySkin('frozen');
-      let snowed = 0;
-      const rolls = 600;
-      for (let i = 0; i < rolls; i += 1) if (Renderer.rollWeather()) snowed += 1;
-      Renderer.applySkin(wasSkin);
-      Renderer.snowing = was;
-      const share = snowed / rolls;
-      return {
-        pass: Math.abs(share - CONFIG.WEATHER.snowChance) < 0.06,
-        detail: snowed + ' of ' + rolls + ' matches, which is '
-          + Math.round(share * 100) + '% against a chance of '
-          + Math.round(CONFIG.WEATHER.snowChance * 100) + '%',
-      };
-    });
-    check('nothing else has weather at all', () => {
-      const wasSkin = Renderer.activeSkin;
-      const was = Renderer.snowing;
-      const wrong = [];
-      Renderer.SKINS.filter((sk) => !sk.snowy).forEach((sk) => {
-        Renderer.applySkin(sk.key);
-        for (let i = 0; i < 40; i += 1) if (Renderer.rollWeather()) wrong.push(sk.key);
-      });
-      Renderer.applySkin(wasSkin);
-      Renderer.snowing = was;
-      return {
-        pass: wrong.length === 0,
-        detail: wrong.length ? 'it snowed on ' + [...new Set(wrong)].join(', ')
-          : 'four skins, forty rolls each, not a flake',
-      };
-    });
-    check('snow coming down deadens the ice', () => {
+    /* A match played in one particular kind of weather, whatever the odds say. */
+    function matchInWeather(kind, mode) {
+      const was = CONFIG.WEATHER.chances;
+      const forced = {};
+      Object.keys(was).forEach((key) => { forced[key] = key === kind ? 1 : 0; });
+      CONFIG.WEATHER.chances = forced;
       /*
-       * Frozen already slides. Snow falling on it should not be a change of scenery only:
-       * it grabs a little, which is a third surface between the ice and the grass.
+       * And whatever the skin says: a frozen pitch insists on its own share of snow, which
+       * is exactly what would override this. For one match it does not insist.
        */
-      const S = CONFIG.SURFACES;
-      const between = S.snow.grip > S.ice.grip && S.snow.grip < S.grass.grip
-        && S.snow.ballDragScale > S.ice.ballDragScale
-        && S.snow.ballDragScale < S.grass.ballDragScale;
-      const wasSkin = Renderer.activeSkin;
-      const was = Renderer.snowing;
-      Renderer.applySkin('frozen');
-      const chance = CONFIG.WEATHER.snowChance;
-      CONFIG.WEATHER.snowChance = 1;
-      const g = startMatch('two');
-      const playedOn = g.surface;
-      CONFIG.WEATHER.snowChance = chance;
-      Renderer.applySkin(wasSkin);
-      Renderer.snowing = was;
+      const skin = Renderer.SKINS.find((sk) => sk.key === Renderer.activeSkin);
+      const insisted = skin && skin.weather;
+      if (insisted) delete skin.weather;
+      try {
+        return startMatch(mode || 'two');
+      } finally {
+        CONFIG.WEATHER.chances = was;
+        if (insisted) skin.weather = insisted;
+      }
+    }
+
+    check('the odds add up to a hundred, and every one of them does something', () => {
+      const C = CONFIG.WEATHER;
+      const total = Object.keys(C.chances).reduce((sum, k) => sum + C.chances[k], 0);
+      const unhandled = Object.keys(C.chances).filter((k) => !C.EFFECTS[k]);
+      const undrawn = Object.keys(C.chances).filter((k) => k !== 'sunny'
+        && k !== 'foggy' && !Renderer.FALLING[k]);
       return {
-        pass: between && playedOn === S.snow,
-        detail: 'grip ' + S.ice.grip + ' on ice, ' + S.snow.grip + ' under snow, '
-          + S.grass.grip + ' on grass, and the match was played on '
-          + (playedOn === S.snow ? 'snow' : 'something else'),
+        pass: Math.abs(total - 1) < 1e-9 && unhandled.length === 0 && undrawn.length === 0,
+        detail: Object.keys(C.chances).map((k) => k + ' ' + Math.round(C.chances[k] * 100)
+          + '%').join(', ') + ', adding to ' + Math.round(total * 100) + '%',
       };
     });
-    check('the flakes are on the screen, falling, and new every match', () => {
+    check('it rolls one of them a match, in the proportions written down', () => {
       const wasSkin = Renderer.activeSkin;
-      const was = Renderer.snowing;
-      const chance = CONFIG.WEATHER.snowChance;
-      Renderer.applySkin('frozen');
-      CONFIG.WEATHER.snowChance = 1;
-      const first = startMatch('two');
-      const old = first.snow;
-      const g = startMatch('two');
-      const flakes = g.snow || [];
-      const offScreen = flakes.filter((f) => f.x < 0 || f.x > CONFIG.CANVAS.width
-        || f.y < -10 || f.y > CONFIG.CANVAS.height + 10);
-      const falling = flakes.filter((f) => g.tweens.getTweensOf(f).length > 0);
-      CONFIG.WEATHER.snowChance = chance;
+      Renderer.applySkin('classic');
+      const rolls = 2000;
+      const got = {};
+      for (let i = 0; i < rolls; i += 1) {
+        const kind = Renderer.rollWeather();
+        got[kind] = (got[kind] || 0) + 1;
+      }
       Renderer.applySkin(wasSkin);
-      Renderer.snowing = was;
+      const off = Object.keys(CONFIG.WEATHER.chances).filter((k) => Math.abs(
+        (got[k] || 0) / rolls - CONFIG.WEATHER.chances[k]) > 0.04);
       return {
-        pass: flakes.length === Renderer.SNOW.flakes && offScreen.length === 0
-          && falling.length === flakes.length && flakes !== old
-          && (old || []).every((f) => !f.active),
-        detail: flakes.length + ' flakes, ' + falling.length + ' of them falling, '
+        pass: off.length === 0,
+        detail: Object.keys(got).map((k) => k + ' ' + Math.round((got[k] / rolls) * 100)
+          + '%').join(', ') + ' over ' + rolls + ' matches',
+      };
+    });
+    check('a frozen pitch snows a third of the time whatever the table says', () => {
+      /*
+       * The skin insists on its own share and the rest of the table divides what is left
+       * between them, keeping the proportions it already had.
+       */
+      const wasSkin = Renderer.activeSkin;
+      Renderer.applySkin('frozen');
+      const odds = Renderer.weatherOdds();
+      const total = Object.keys(odds).reduce((sum, k) => sum + odds[k], 0);
+      const forced = Renderer.SKINS.find((sk) => sk.key === 'frozen').weather.snow;
+      let snowed = 0;
+      const rolls = 900;
+      for (let i = 0; i < rolls; i += 1) if (Renderer.rollWeather() === 'snow') snowed += 1;
+      Renderer.applySkin(wasSkin);
+      return {
+        pass: Math.abs(odds.snow - forced) < 1e-9 && Math.abs(total - 1) < 1e-9
+          && Math.abs(snowed / rolls - forced) < 0.05,
+        detail: 'snow is ' + Math.round(odds.snow * 100) + '% of a table adding to '
+          + Math.round(total * 100) + '%, and it snowed on '
+          + Math.round((snowed / rolls) * 100) + '% of ' + rolls + ' matches',
+      };
+    });
+    check('sunshine is the game as it always was', () => {
+      // On grass: what the ground is doing is the skin's business, not the sky's.
+      const wasSkin = Renderer.activeSkin;
+      Renderer.applySkin('classic');
+      const g = matchInWeather('sunny');
+      Renderer.applySkin(wasSkin);
+      return {
+        pass: Object.keys(g.weather).length === 0 && g.wind === null
+          && g.ballDragNow() === CONFIG.BALL.drag,
+        detail: 'nothing on the ball, and it drags at ' + g.ballDragNow(),
+      };
+    });
+    check('rain skids the ball on and cuts a park pitch up faster', () => {
+      const wasSkin = Renderer.activeSkin;
+      Renderer.applySkin('sunday');
+      const P = CONFIG.PITCH;
+      const dry = matchInWeather('sunny');
+      const dryDrag = dry.ballDragNow();
+      dry.tearPitch(P.centreX, P.centreY);
+      const dryTear = dry.wearAt(P.centreX, P.centreY);
+
+      const wet = matchInWeather('rainy');
+      const wetDrag = wet.ballDragNow();
+      wet.tearPitch(P.centreX, P.centreY,
+        CONFIG.WEAR.perKick * (wet.weather.wearScale || 1));
+      const wetTear = wet.wearAt(P.centreX, P.centreY);
+      Renderer.applySkin(wasSkin);
+      return {
+        pass: wetDrag < dryDrag && wetTear > dryTear,
+        detail: 'drag ' + Math.round(dryDrag) + ' dry against ' + Math.round(wetDrag)
+          + ' wet, and one kick takes ' + dryTear.toFixed(2) + ' out of it dry against '
+          + wetTear.toFixed(2) + ' wet',
+      };
+    });
+    check('wind blows a rolling ball off its line and leaves a still one alone', () => {
+      const P = CONFIG.PITCH;
+      const wasSkin = Renderer.activeSkin;
+      Renderer.applySkin('classic');
+      const g = matchInWeather('windy');
+      Renderer.applySkin(wasSkin);
+      g.setOwner(null);
+      g.state.recaptureLockUntil = g.time.now + 99999;
+      g.red.sprite.body.reset(P.left + 80, P.bottom - 60);
+      g.blue.sprite.body.reset(P.right - 80, P.bottom - 60);
+
+      // Sat on the spot: a wind that can move this is a wind that scores on its own.
+      g.ball.body.reset(P.centreX, P.centreY);
+      g.ball.body.setVelocity(0, 0);
+      for (let i = 0; i < 30; i += 1) step(1);
+      const crept = Math.abs(g.ball.x - P.centreX);
+
+      // Rolling across the wind, which runs along the pitch: it should bend into it.
+      g.ball.body.reset(P.centreX, P.top + 60);
+      g.ball.body.setVelocity(0, 320);
+      for (let i = 0; i < 60; i += 1) step(1);
+      const bent = Math.abs(g.ball.x - P.centreX);
+      return {
+        pass: crept < 1 && bent > 10,
+        detail: 'a ball sat still moved ' + crept.toFixed(1) + 'px, and one rolling across '
+          + 'the wind bent ' + Math.round(bent) + 'px',
+      };
+    });
+    check('snow deadens the ball, and grips where bare ice would not', () => {
+      const wasSkin = Renderer.activeSkin;
+      Renderer.applySkin('frozen');
+      const bare = matchInWeather('sunny');
+      const bareDrag = bare.ballDragNow();
+      bare.red.sprite.body.setVelocity(0, 0);
+      bare.steer(bare.red.sprite.body, 200, 0);
+      const onIce = Math.round(bare.red.sprite.body.velocity.x);
+
+      const snowy = matchInWeather('snow');
+      const snowDrag = snowy.ballDragNow();
+      snowy.red.sprite.body.setVelocity(0, 0);
+      snowy.steer(snowy.red.sprite.body, 200, 0);
+      const onSnow = Math.round(snowy.red.sprite.body.velocity.x);
+      Renderer.applySkin(wasSkin);
+      return {
+        pass: snowDrag > bareDrag && onSnow > onIce,
+        detail: 'drag ' + Math.round(bareDrag) + ' on bare ice against ' + Math.round(snowDrag)
+          + ' under snow, and a shove of 200 gets you ' + onIce + ' on ice, ' + onSnow
+          + ' on snow',
+      };
+    });
+    check('fog is between you and the pitch, not on it', () => {
+      const wasSkin = Renderer.activeSkin;
+      Renderer.applySkin('classic');
+      const g = matchInWeather('foggy');
+      Renderer.applySkin(wasSkin);
+      const parts = g.fog || [];
+      const off = parts.filter((o) => !o.active);
+      return {
+        pass: parts.length > 1 && off.length === 0 && g.wind === null
+          && g.ballDragNow() === CONFIG.BALL.drag
+          && parts.every((o) => o.depth < Renderer.DEPTH.hud),
+        detail: parts.length + ' pieces of fog, all under the HUD, and the ball drags at '
+          + g.ballDragNow() + ' as it does in the sun',
+      };
+    });
+    check('what is coming down is on the screen, falling, and new every match', () => {
+      const first = matchInWeather('rainy');
+      const old = first.weatherMotes;
+      const g = matchInWeather('rainy');
+      const motes = g.weatherMotes || [];
+      const offScreen = motes.filter((m) => m.x < -20 || m.x > CONFIG.CANVAS.width + 20
+        || m.y < -20 || m.y > CONFIG.CANVAS.height + 20);
+      const falling = motes.filter((m) => g.tweens.getTweensOf(m).length > 0);
+      return {
+        pass: motes.length === Renderer.FALLING.rainy.motes && offScreen.length === 0
+          && falling.length === motes.length && motes !== old
+          && (old || []).every((m) => !m.active),
+        detail: motes.length + ' drops, ' + falling.length + ' of them falling, '
           + offScreen.length + ' off the screen, and the last match\'s '
           + ((old || []).length) + ' destroyed with it',
       };
     });
-    check('a match with no snow has none of it', () => {
-      const wasSkin = Renderer.activeSkin;
-      const was = Renderer.snowing;
-      const chance = CONFIG.WEATHER.snowChance;
-      Renderer.applySkin('frozen');
-      CONFIG.WEATHER.snowChance = 0;
-      const g = startMatch('two');
-      const flakes = g.children.list.filter((o) => o.texture && o.texture.key === 'flake');
-      const surface = g.surface;
-      CONFIG.WEATHER.snowChance = chance;
-      Renderer.applySkin(wasSkin);
-      Renderer.snowing = was;
+    check('a sunny match has nothing coming down at all', () => {
+      const g = matchInWeather('sunny');
+      const motes = g.children.list.filter((o) => o.texture
+        && ['flake', 'raindrop', 'gust', 'fogbank'].indexOf(o.texture.key) !== -1);
       return {
-        pass: g.snow === null && flakes.length === 0 && surface === CONFIG.SURFACES.ice,
-        detail: flakes.length + ' flakes on a clear night, played on '
-          + (surface === CONFIG.SURFACES.ice ? 'ice' : 'something else'),
+        pass: g.weatherMotes === null && g.fog === null && motes.length === 0,
+        detail: motes.length + ' bits of weather on a clear day',
       };
     });
 
