@@ -133,21 +133,34 @@ const Renderer = {
    */
   STADIUMS: [
     {
+      /*
+       * Sunday League's own ground, and the only one it ever plays in. No stand and no
+       * seats: a rail, and whoever is standing behind it. Not in STADIUM_CHOICES, so it
+       * cannot be picked for anything else and nothing else can be picked for it.
+       */
+      key: 'sunday', name: 'SUNDAY',
+      blurb: 'a rail and a dozen unsteady witnesses',
+      material: 'metal', structure: false, rows: 2, people: [10, 18], terrace: 0,
+    },
+    {
       key: 'small', name: 'SMALL',
-      blurb: 'a metal rail, a dog, and whoever wandered over',
-      material: 'metal', rows: 1, people: [12, 22], terrace: 0,
+      blurb: 'a metal stand and whoever wandered over',
+      material: 'metal', structure: true, rows: 1, people: [26, 40], terrace: 0,
     },
     {
       key: 'medium', name: 'MEDIUM',
       blurb: 'brick terracing and a proper Saturday',
-      material: 'brick', rows: 2, people: [58, 78], terrace: 2,
+      material: 'brick', structure: true, rows: 2, people: [58, 78], terrace: 2,
     },
     {
       key: 'large', name: 'LARGE',
       blurb: 'brick, packed, and louder than the game deserves',
       // Packed tighter than the others, because three rows have to fit in the same 60px
       // of surround that one row has all to itself in a small ground.
-      material: 'brick', rows: 3, people: [115, 145], terrace: 3, standOff: 12, rowGap: 12,
+      material: 'brick', structure: true, rows: 3, people: [150, 190],
+      terrace: 3, standOff: 12, rowGap: 12,
+      // And a stand behind each goal, left standing on its own with the corners open.
+      ends: true,
     },
   ],
 
@@ -181,6 +194,17 @@ const Renderer = {
       courseEvery: 10,    // a course of bricks
       brickEvery: 26,     // and how long each brick is
     },
+  },
+
+  /*
+   * The stands behind the goals, for the one ground big enough to have them. Deliberately
+   * not joined to the ones down the sides: open corners are what a ground that grew a bit
+   * at a time looks like, and a continuous bowl would read as a different, tidier place.
+   */
+  ENDS: {
+    depth: 34,          // how far back from the net they reach
+    cornerGap: 46,      // and how far short of the corners they stop, at both ends
+    columns: 2,
   },
 
   SEATS: {
@@ -415,6 +439,8 @@ const Renderer = {
       key: 'sunday',
       name: 'SUNDAY LEAGUE',
       blurb: 'mud, a rail, and a dozen unsteady witnesses',
+      /* Its own ground, always. A park pitch in a brick terrace is not a park pitch. */
+      ground: 'sunday',
       colours: {
         pitchGreen: 0x5a6b3a, stripe: 0x63753f, chalkWhite: 0xd8d2c0,
         redTeam: 0xe86a17, blueTeam: 0x7a3fbf,
@@ -429,8 +455,8 @@ const Renderer = {
    * settings screen shows and which number picks which, and reordering it must not quietly
    * change what a new player starts on.
    */
-  DEFAULT_SKIN: 'sixpints',
-  activeSkin: 'sixpints',
+  DEFAULT_SKIN: 'classic',
+  activeSkin: 'classic',
 
   /* Every bot is equally drunk, so none of these promise a steadier opponent. */
   DIFFICULTY_BLURB: {
@@ -1079,10 +1105,27 @@ const Renderer = {
     g.lineBetween(x1 + dx * t0, y1 + dy * t0, x1 + dx * t1, y1 + dy * t1);
   },
 
-  /* The ground this match is in. Rolled fresh each time unless a size has been pinned. */
+  /* A skin may name the only ground it is ever played in, which then settles it. */
+  skinGround() {
+    const skin = Renderer.SKINS.find((sk) => sk.key === Renderer.activeSkin);
+    if (!skin || !skin.ground) return null;
+    return Renderer.STADIUMS.find((st) => st.key === skin.ground) || null;
+  },
+
+  /* The grounds the setting can actually choose between. */
+  pickableStadiums() {
+    return Renderer.STADIUMS.filter((st) => Renderer.STADIUM_CHOICES.indexOf(st.key) !== -1);
+  },
+
+  /*
+   * The ground this match is in: whatever the skin insists on, else whatever has been
+   * pinned in settings, else a fresh roll every time.
+   */
   rollStadium() {
-    const pinned = Renderer.STADIUMS.find((s) => s.key === Renderer.stadiumChoice);
-    Renderer.currentStadium = pinned || Phaser.Utils.Array.GetRandom(Renderer.STADIUMS);
+    const owned = Renderer.skinGround();
+    const pinned = Renderer.pickableStadiums().find((st) => st.key === Renderer.stadiumChoice);
+    Renderer.currentStadium = owned || pinned
+      || Phaser.Utils.Array.GetRandom(Renderer.pickableStadiums());
     return Renderer.currentStadium;
   },
 
@@ -1141,6 +1184,49 @@ const Renderer = {
     }));
   },
 
+  /*
+   * The stands behind each goal. Same idea as the sides turned through ninety degrees:
+   * seats in columns rather than rows, and a way out cut into the outer edge.
+   */
+  endStands(S) {
+    if (!S.ends) return [];
+    const P = CONFIG.PITCH;
+    const E = Renderer.ENDS;
+    const netBack = { left: P.left - P.goalDepth, right: P.right + P.goalDepth };
+
+    return [
+      { dir: -1, face: netBack.left, back: netBack.left - E.depth },
+      { dir: 1, face: netBack.right, back: netBack.right + E.depth },
+    ].map((end) => {
+      const top = P.top + E.cornerGap;
+      const bottom = P.bottom - E.cornerGap;
+      const gap = E.depth / (E.columns + 1);
+      return {
+        dir: end.dir,
+        face: end.face,
+        back: end.back,
+        top,
+        bottom,
+        // Nearest the pitch first, so the row behind is the one drawn smaller.
+        columns: Array.from({ length: E.columns }, (unused, i) => ({
+          x: end.face + end.dir * gap * (i + 1),
+          scale: Math.pow(Renderer.CROWD.rowScale, i),
+        })),
+        exit: { x: end.back - end.dir * (Renderer.BEER.holeDepth / 2), y: (top + bottom) / 2 },
+      };
+    });
+  },
+
+  /* The same grid as a row of seats, stood on its end. */
+  seatsDown(end, column) {
+    const E = Renderer.SEATS;
+    const seats = [];
+    for (let y = end.top + E.every / 2; y + E.width / 2 <= end.bottom; y += E.every) {
+      seats.push({ x: column.x, y, scale: column.scale });
+    }
+    return seats;
+  },
+
   /* Where the seats are, on a fixed grid so the same seat is in the same place every time. */
   seatsIn(band, row) {
     const E = Renderer.SEATS;
@@ -1177,10 +1263,21 @@ const Renderer = {
     const mat = Renderer.MATERIALS[S.material];
     const sides = Renderer.standRows(S);
 
-    sides.forEach((side) => {
-      Renderer.drawStand(g, side, S, mat);
-      Renderer.drawSeats(g, side, mat);
-    });
+    /*
+     * A ground with no structure is a rail and some grass: the people are simply standing
+     * there. Everything below still knows where they stand, so a drink is still a walk out
+     * past the rail and back.
+     */
+    if (S.structure) {
+      sides.forEach((side) => {
+        Renderer.drawStand(g, side, S, mat);
+        Renderer.drawSeats(g, side, mat);
+      });
+      Renderer.endStands(S).forEach((end) => {
+        Renderer.drawEndStand(g, end, S, mat);
+        Renderer.drawEndSeats(g, end, mat);
+      });
+    }
 
     // The rail goes on last of the structure, in front of everything it holds back.
     g.lineStyle(2, mat.rail, 1);
@@ -1191,7 +1288,70 @@ const Renderer = {
       }
     });
 
-    Renderer.fillSeats(scene, sides, S);
+    Renderer.fillSeats(scene, S);
+  },
+
+  /*
+   * Behind the goal. The rail runs down the edge facing the pitch; the way out is cut into
+   * the back, the same as on the sides.
+   */
+  drawEndStand(g, end, S, mat) {
+    const E = Renderer.ENDS;
+    const B = Renderer.BEER;
+    const left = Math.min(end.face, end.back);
+    const height = end.bottom - end.top;
+
+    g.fillStyle(mat.wall, 1);
+    g.fillRect(left, end.top, E.depth, height);
+
+    if (S.material === 'metal') {
+      g.lineStyle(1, mat.edge, mat.jointAlpha);
+      for (let y = end.top; y <= end.bottom; y += mat.ribEvery) {
+        g.lineBetween(left, y, left + E.depth, y);
+      }
+    } else {
+      // Courses run the way the wall does, so behind a goal they run vertically.
+      g.lineStyle(1, mat.edge, mat.jointAlpha);
+      let course = 0;
+      for (let x = left; x <= left + E.depth; x += mat.courseEvery) {
+        g.lineBetween(x, end.top, x, end.bottom);
+        const offset = (course % 2) * (mat.brickEvery / 2);
+        for (let y = end.top + offset; y <= end.bottom; y += mat.brickEvery) {
+          g.lineBetween(x, y, Math.min(x + mat.courseEvery, left + E.depth), y);
+        }
+        course += 1;
+      }
+    }
+
+    // The way out, cut into the back edge.
+    const hx = Math.min(end.back, end.back - end.dir * B.holeDepth);
+    g.fillStyle(Renderer.THEME.nightBlack, 1);
+    g.fillRect(hx, end.exit.y - B.holeWidth / 2, B.holeDepth, B.holeWidth);
+    g.lineStyle(2, mat.edge, 0.85);
+    g.strokeRect(hx, end.exit.y - B.holeWidth / 2, B.holeDepth, B.holeWidth);
+
+    // Rail down the front, posts and all.
+    g.lineStyle(2, mat.rail, 1);
+    g.lineBetween(end.face, end.top, end.face, end.bottom);
+    for (let y = end.top; y <= end.bottom; y += Renderer.CROWD.postEvery) {
+      g.lineBetween(end.face - Renderer.CROWD.postHalfHeight, y,
+        end.face + Renderer.CROWD.postHalfHeight, y);
+    }
+  },
+
+  drawEndSeats(g, end, mat) {
+    const E = Renderer.SEATS;
+    end.columns.forEach((column) => {
+      Renderer.seatsDown(end, column).forEach((seat) => {
+        // Turned with the stand: a seat behind the goal faces along the pitch, not across it.
+        const w = E.height * seat.scale;
+        const h = E.width * seat.scale;
+        g.fillStyle(mat.seat, 1);
+        g.fillRect(seat.x - w / 2, seat.y - h / 2, w, h);
+        g.lineStyle(1, mat.seatEdge, 0.9);
+        g.strokeRect(seat.x - w / 2, seat.y - h / 2, w, h);
+      });
+    });
   },
 
   /* The structure: a sheet of corrugated metal, or courses of brick with steps cut in it. */
@@ -1278,22 +1438,34 @@ const Renderer = {
    * simply which of them are taken: a thin crowd reads as a thin crowd rather than as a
    * short row, and somebody off getting a drink leaves a hole you can see.
    */
-  fillSeats(scene, sides, S) {
-    const K = Renderer.CROWD;
-    const wanted = Phaser.Math.Between(S.people[0], S.people[1]);
-
-    const all = [];
-    sides.forEach((side) => {
+  /* Every seat in the ground and the way out that serves it, sides and ends alike. */
+  seatPlaces(S) {
+    const places = [];
+    Renderer.standRows(S).forEach((side) => {
       const exits = Renderer.exitsIn(side);
       side.rows.forEach((row) => {
         side.bands.forEach((band, bandIndex) => {
           Renderer.seatsIn(band, row).forEach((seat) => {
-            all.push({ seat, exit: exits[bandIndex] });
+            places.push({ seat, exit: exits[bandIndex] });
           });
         });
       });
     });
+    Renderer.endStands(S).forEach((end) => {
+      end.columns.forEach((column) => {
+        Renderer.seatsDown(end, column).forEach((seat) => {
+          places.push({ seat, exit: end.exit });
+        });
+      });
+    });
+    return places;
+  },
 
+  fillSeats(scene, S) {
+    const K = Renderer.CROWD;
+    const wanted = Phaser.Math.Between(S.people[0], S.people[1]);
+
+    const all = Renderer.seatPlaces(S);
     Phaser.Utils.Array.Shuffle(all);
     const taken = all.slice(0, Math.min(wanted, all.length));
 
@@ -1306,6 +1478,19 @@ const Renderer = {
       fan.seat = seat;
       fan.exit = place.exit;
       fan.away = false;
+
+      /*
+       * Nobody stands in a neat grid on a park pitch. With no seats to sit in, the grid is
+       * only a way of spacing people out, so it gets shaken up on the way in.
+       */
+      if (!S.structure) {
+        fan.seat = {
+          x: seat.x + Phaser.Math.Between(-K.jitterX, K.jitterX),
+          y: seat.y + Phaser.Math.Between(-K.jitterY, K.jitterY),
+          scale: seat.scale,
+        };
+        fan.setPosition(fan.seat.x, fan.seat.y);
+      }
 
       // Sideways only: a circle rotating on the spot would not read as anything. Held on
       // the sprite so a trip to the bar can stop it and put it back afterwards.
@@ -2482,9 +2667,17 @@ const Renderer = {
       handlers.assist);
 
     Renderer.text(scene, nameX, 528, 'GROUND', 18, C.accent).setDepth(Renderer.DEPTH.overlay);
+    /*
+     * A skin may own the only ground it is ever played in, in which case this says so
+     * rather than offering a choice that would be ignored the moment a match started.
+     */
+    const owned = Renderer.skinGround();
     const ground = Renderer.STADIUMS.find((st) => st.key === Renderer.stadiumChoice);
-    row(558, 'G   STADIUM   ' + Renderer.stadiumChoice.toUpperCase(),
-      ground ? ground.blurb : 'a different ground every match', handlers.stadium);
+    row(558,
+      owned ? 'G   STADIUM   ' + owned.name : 'G   STADIUM   ' + Renderer.stadiumChoice.toUpperCase(),
+      owned ? owned.blurb + ', and nothing else for this skin'
+        : (ground ? ground.blurb : 'a different ground every match'),
+      handlers.stadium);
 
     // The keys themselves now live on a screen of their own, where they can be changed.
     row(588, 'K   CHANGE THE KEYS',

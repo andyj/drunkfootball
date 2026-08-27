@@ -267,7 +267,7 @@ const DrunkTests = (() => {
       // what a new player starts on.
       const named = Renderer.SKINS.some((s) => s.key === Renderer.DEFAULT_SKIN);
       return {
-        pass: named && Renderer.DEFAULT_SKIN === 'sixpints',
+        pass: named && Renderer.DEFAULT_SKIN === 'classic',
         detail: 'default is ' + Renderer.DEFAULT_SKIN + ', first listed is '
           + Renderer.SKINS[0].key,
       };
@@ -379,7 +379,7 @@ const DrunkTests = (() => {
       const wasStadium = Renderer.stadiumChoice;
       const report = [];
       const bad = [];
-      Renderer.STADIUMS.forEach((stadium) => {
+      Renderer.pickableStadiums().forEach((stadium) => {
         Renderer.stadiumChoice = stadium.key;
         for (let run = 0; run < 3; run++) {
           const g = startMatch('two');
@@ -397,7 +397,7 @@ const DrunkTests = (() => {
     check('a bigger ground really is bigger', () => {
       // Ordered by both measures, so the three are told apart at a glance rather than
       // being three names for the same thing.
-      const sizes = Renderer.STADIUMS;
+      const sizes = Renderer.pickableStadiums();
       const rows = sizes.map((s) => s.rows);
       const most = sizes.map((s) => s.people[1]);
       const rising = (a) => a.every((n, i) => i === 0 || n > a[i - 1]);
@@ -417,25 +417,126 @@ const DrunkTests = (() => {
       Renderer.stadiumChoice = wasStadium;
       return { pass: seen.size > 1, detail: [...seen].join(', ') };
     });
-    check('every ground stays inside the surround', () => {
-      // There is 60px above the pitch and 60px below it. A row of people standing outside
-      // that is a row standing on the pitch, or off the screen altogether.
-      const K = Renderer.CROWD;
+    check('nobody watching is standing on the pitch, or off the screen', () => {
+      /*
+       * Stated as "not on the playing area" rather than "above or below it", because the
+       * biggest ground now has stands behind both goals and the people in them are beside
+       * the pitch rather than over it.
+       */
       const P = CONFIG.PITCH;
+      const pitch = { left: P.left, right: P.right, top: P.top, bottom: P.bottom };
       const wasStadium = Renderer.stadiumChoice;
       const bad = [];
-      Renderer.STADIUMS.forEach((stadium) => {
+      Renderer.pickableStadiums().forEach((stadium) => {
         Renderer.stadiumChoice = stadium.key;
         const g = startMatch('two');
         g.children.list.filter((o) => o.texture && o.texture.key === 'fan').forEach((fan) => {
           const b = boundsOf(fan);
-          const above = b.bottom <= P.top && b.top >= 0;
-          const below = b.top >= P.bottom && b.bottom <= CONFIG.CANVAS.height;
-          if (!above && !below) bad.push(stadium.key + ' at y' + Math.round(fan.y));
+          if (overlaps(b, pitch, 0)) bad.push(stadium.key + ' on the pitch at y' + Math.round(fan.y));
+          if (b.top < 0 || b.left < 0 || b.bottom > CONFIG.CANVAS.height
+            || b.right > CONFIG.CANVAS.width) {
+            bad.push(stadium.key + ' off the screen at y' + Math.round(fan.y));
+          }
         });
       });
       Renderer.stadiumChoice = wasStadium;
       return { pass: bad.length === 0, detail: bad.slice(0, 4).join(', ') || 'all in the stands' };
+    });
+    check('only the biggest ground has stands behind the goals', () => {
+      const withEnds = Renderer.STADIUMS.filter((st) => Renderer.endStands(st).length > 0);
+      return {
+        pass: withEnds.length === 1 && withEnds[0].key === 'large',
+        detail: withEnds.map((st) => st.key).join(', ') || 'none of them',
+      };
+    });
+    check('the stands behind the goals are not joined to the ones down the sides', () => {
+      /*
+       * Open corners are the whole look: a ground that grew a bit at a time rather than a
+       * tidy continuous bowl. So every end has to stop short of every side.
+       */
+      const large = Renderer.STADIUMS.find((st) => st.key === 'large');
+      const sides = Renderer.standRows(large);
+      const ends = Renderer.endStands(large);
+      const joined = [];
+      ends.forEach((end, i) => {
+        sides.forEach((side, j) => {
+          const sideBox = { left: -Infinity, right: Infinity,
+            top: Math.min(side.rail, side.back), bottom: Math.max(side.rail, side.back) };
+          const endBox = { left: Math.min(end.face, end.back), right: Math.max(end.face, end.back),
+            top: end.top, bottom: end.bottom };
+          if (overlaps(endBox, sideBox, 0)) joined.push('end ' + i + ' meets side ' + j);
+        });
+      });
+      return {
+        pass: ends.length === 2 && joined.length === 0,
+        detail: joined.join(', ') || ends.length + ' ends, all four corners open',
+      };
+    });
+    check('the stands behind the goals are behind the goals, not in them', () => {
+      const P = CONFIG.PITCH;
+      const large = Renderer.STADIUMS.find((st) => st.key === 'large');
+      const bad = [];
+      Renderer.endStands(large).forEach((end) => {
+        const near = Math.min(end.face, end.back);
+        const far = Math.max(end.face, end.back);
+        // Clear of the netting, which reaches goalDepth back from each line.
+        if (near < P.left - P.goalDepth && far > P.left - P.goalDepth) bad.push('left in the net');
+        if (near < P.right + P.goalDepth && far > P.right + P.goalDepth) bad.push('right in the net');
+        if (near < 0 || far > CONFIG.CANVAS.width) bad.push('off the screen');
+      });
+      return { pass: bad.length === 0, detail: bad.join(', ') || 'both tucked in behind the nets' };
+    });
+    check('sunday league is played on its own ground and no other', () => {
+      // Its blurb promises mud, a rail and a dozen witnesses. A brick terrace is not that.
+      const wasSkin = Renderer.activeSkin;
+      const wasStadium = Renderer.stadiumChoice;
+      const got = [];
+      Renderer.applySkin('sunday');
+      ['random', 'small', 'medium', 'large'].forEach((choice) => {
+        Renderer.stadiumChoice = choice;
+        startMatch('two');
+        got.push(Renderer.currentStadium.key);
+      });
+      Renderer.applySkin(wasSkin);
+      Renderer.stadiumChoice = wasStadium;
+      const own = Renderer.STADIUMS.find((st) => st.key === 'sunday');
+      return {
+        pass: got.every((k) => k === 'sunday') && own && own.structure === false,
+        detail: 'asked for random/small/medium/large, got ' + got.join(', '),
+      };
+    });
+    check('its ground cannot be picked for anything else', () => {
+      const offered = Renderer.pickableStadiums().map((st) => st.key);
+      const wasSkin = Renderer.activeSkin;
+      Renderer.applySkin('classic');
+      const rolled = new Set();
+      const wasStadium = Renderer.stadiumChoice;
+      Renderer.stadiumChoice = 'random';
+      for (let i = 0; i < 40; i += 1) {
+        startMatch('two');
+        rolled.add(Renderer.currentStadium.key);
+      }
+      Renderer.applySkin(wasSkin);
+      Renderer.stadiumChoice = wasStadium;
+      return {
+        pass: offered.indexOf('sunday') === -1 && !rolled.has('sunday'),
+        detail: 'settings offer ' + offered.join('/') + ', 40 rolls gave ' + [...rolled].join('/'),
+      };
+    });
+    check('a ground with no stand has no seats to sit in', () => {
+      // Sunday league is a rail and some grass. Drawing seats on it would be drawing a
+      // stand it does not have.
+      const wasSkin = Renderer.activeSkin;
+      Renderer.applySkin('sunday');
+      const g = startMatch('two');
+      const fans = g.children.list.filter((o) => o.texture && o.texture.key === 'fan');
+      // Shaken off the grid they were spaced out on, so they read as a scatter.
+      const onTheGrid = fans.filter((f) => Number.isInteger(f.seat.x * 2)).length;
+      Renderer.applySkin(wasSkin);
+      return {
+        pass: fans.length > 0 && onTheGrid < fans.length,
+        detail: fans.length + ' standing, ' + onTheGrid + ' of them still on the grid',
+      };
     });
     check('the HUD score and clock do not collide', () => {
       const g = startMatch('bot');
@@ -1468,18 +1569,8 @@ const DrunkTests = (() => {
     const fansIn = (scene) => scene.children.list.filter((o) => o.texture
       && o.texture.key === 'fan');
 
-    /* Every seat in the ground, however many rows and blocks it has. */
-    function allSeats(stadium) {
-      const seats = [];
-      Renderer.standRows(stadium).forEach((side) => {
-        side.rows.forEach((row) => {
-          side.bands.forEach((band) => {
-            Renderer.seatsIn(band, row).forEach((seat) => seats.push(seat));
-          });
-        });
-      });
-      return seats;
-    }
+    /* Every seat in the ground, however many rows and blocks it has, ends included. */
+    const allSeats = (stadium) => Renderer.seatPlaces(stadium).map((place) => place.seat);
 
     function withStadium(key, fn) {
       const was = Renderer.stadiumChoice;
