@@ -448,19 +448,27 @@ const Renderer = {
    * Fog: a flat haze over the lot, and banks of it drifting through. Baked soft rather
    * than drawn, because a circle at one alpha is a plate, not a cloud.
    *
-   * Most of the thickness is in the wash rather than in the banks, and that is deliberate.
-   * The wash is uniform, so it never stacks with itself: raising it makes the whole ground
-   * murkier without ever producing a patch you cannot see the ball through. Bank alpha
-   * stacks wherever two of them overlap, so it is the number that has to stay modest —
-   * readability before decoration, and the ball is drawn under all of this.
+   * Fog is weather, not a setting, so it does not sit at one thickness: the flat layer
+   * rolls in until the far goal is nearly gone and then lifts again, over about ten
+   * seconds each way. That is what lets it get genuinely bad — at the thick end only a
+   * fifth of the picture is coming through — without the match becoming unplayable,
+   * because it always clears again.
+   *
+   * All of the cycling is on the flat layer and none of it on the banks, deliberately. The
+   * flat layer is uniform so it never stacks with itself, which makes the thick end a
+   * number you can predict; bank alpha stacks wherever two overlap, so those stay low and
+   * steady. Readability before decoration, and the ball is drawn under all of this.
    */
   FOG: {
-    wash: 0.38,
-    banks: 11,
-    sizeMin: 260,
-    sizeMax: 580,
-    alphaMin: 0.14,
-    alphaMax: 0.26,
+    thin: 0.46,              // the flat haze at its clearest
+    thick: 0.78,             // and at its worst, a few seconds later
+    rollMsMin: 7000,         // how long it takes to close in, or to lift again
+    rollMsMax: 11000,
+    banks: 14,
+    sizeMin: 300,
+    sizeMax: 660,
+    alphaMin: 0.10,
+    alphaMax: 0.18,
     crossMsMin: 24000,
     crossMsMax: 46000,
     rings: 14,               // how many steps the soft edge is baked in
@@ -1652,11 +1660,22 @@ const Renderer = {
     const H = CONFIG.CANVAS.height;
     const parts = [];
 
-    parts.push(scene.add.image(W / 2, H / 2, 'px')
+    const haze = scene.add.image(W / 2, H / 2, 'px')
       .setDisplaySize(W, H)
       .setTint(Renderer.THEME.chalkWhite)
-      .setAlpha(F.wash)
-      .setDepth(Renderer.DEPTH.label - 1));
+      .setAlpha(F.thin)
+      .setDepth(Renderer.DEPTH.label - 1);
+    // Rolling in and lifting again, on its own tween so it keeps going in the shootout too.
+    haze.roll = scene.tweens.add({
+      targets: haze,
+      alpha: F.thick,
+      duration: F.rollMsMin + Math.random() * (F.rollMsMax - F.rollMsMin),
+      delay: Math.random() * 2000,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.easeInOut',
+    });
+    parts.push(haze);
 
     for (let i = 0; i < F.banks; i += 1) {
       const size = F.sizeMin + Math.random() * (F.sizeMax - F.sizeMin);

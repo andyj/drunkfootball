@@ -3569,15 +3569,15 @@ const DrunkTests = (() => {
     });
     check('the fog is thick enough to be fog and thin enough to play through', () => {
       /*
-       * Readability before decoration, and the fog is drawn over the players and the ball.
-       * So what matters is not how thick one bank is, it is how thick the worst stack of
-       * them gets: the flat wash plus every bank overlapping that spot, composited the way
-       * they are actually composited, each weighted by its own baked softness rather than
-       * counted at full strength across its whole width.
+       * Measured at the worst moment of the cycle — the flat haze at FOG.thick, plus every
+       * bank overlapping that spot, composited the way they actually are and each weighted
+       * by the softness baked into its own texture rather than counted at full strength
+       * across its whole width.
        *
-       * The wash deliberately carries most of the murk, because a wash cannot stack with
-       * itself. Bank alpha is the number that has to stay modest, and this is what stops
-       * somebody raising it until the ball disappears into a patch.
+       * The ceiling is deliberately high, because at the thick end of the roll the fog is
+       * supposed to be nearly blinding. What it must never do is white out completely:
+       * something has to come through everywhere, and the fog has to lift again, which is
+       * the next check.
        */
       const F = Renderer.FOG;
       const P = CONFIG.PITCH;
@@ -3599,7 +3599,7 @@ const DrunkTests = (() => {
         const banks = (g.fog || []).slice(1);      // [0] is the flat wash over everything
         for (let x = P.left; x <= P.right; x += 40) {
           for (let y = P.top; y <= P.bottom; y += 40) {
-            let clear = 1 - F.wash;
+            let clear = 1 - F.thick;
             banks.forEach((bank) => {
               const dx = (x - bank.x) / (bank.displayWidth / 2);
               const dy = (y - bank.y) / (bank.displayHeight / 2);
@@ -3612,10 +3612,42 @@ const DrunkTests = (() => {
       }
       Renderer.applySkin(wasSkin);
       return {
-        pass: worst > F.wash && worst < 0.75 && falloff[0] > falloff[20],
-        detail: 'a wash of ' + F.wash + ' under ' + F.banks + ' banks that fade from '
-          + falloff[0].toFixed(2) + ' to ' + falloff[20].toFixed(2) + ', thickest anywhere '
-          + 'on the pitch ' + worst.toFixed(2) + ' of full white',
+        pass: worst > F.thick && worst < 0.92 && falloff[0] > falloff[20],
+        detail: 'at its worst the haze is ' + F.thick + ' under ' + F.banks
+          + ' banks that fade from ' + falloff[0].toFixed(2) + ' to '
+          + falloff[20].toFixed(2) + ', so the thickest point on the pitch is '
+          + worst.toFixed(2) + ' of full white, leaving ' + (1 - worst).toFixed(2)
+          + ' coming through',
+      };
+    });
+    check('the fog rolls in and lifts again rather than sitting at one thickness', () => {
+      /*
+       * The point of the roll is that it can be nearly blinding without the match becoming
+       * unplayable, because it always clears. So both ends matter: it has to reach thick,
+       * and it has to come back to thin.
+       *
+       * Read off the tween rather than watched, because tweens in this harness advance on
+       * real elapsed time and a stepped frame moves them not at all.
+       */
+      const F = Renderer.FOG;
+      const wasSkin = Renderer.activeSkin;
+      Renderer.applySkin('classic');
+      const g = matchInWeather('foggy');
+      Renderer.applySkin(wasSkin);
+
+      const haze = (g.fog || [])[0];
+      const roll = haze && haze.roll;
+      const live = !!roll && g.tweens.getTweensOf(haze).length > 0;
+      // Both ends of the swing, off the tween's own data.
+      const data = roll && roll.data ? roll.data.find((d) => d.key === 'alpha') : null;
+      const ends = data ? [data.start, data.end].map((v) => Math.round(v * 100) / 100) : [];
+      return {
+        pass: live && F.thick > F.thin && F.thin > 0
+          && ends.indexOf(F.thin) !== -1 && ends.indexOf(F.thick) !== -1,
+        detail: !live ? 'the haze is not moving at all'
+          : 'it swings ' + ends.join(' to ') + ' and back, over '
+            + Math.round(F.rollMsMin / 1000) + '-' + Math.round(F.rollMsMax / 1000)
+            + 's each way',
       };
     });
     check('what is coming down is on the screen, falling, and new every match', () => {
