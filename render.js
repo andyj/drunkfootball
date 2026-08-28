@@ -445,16 +445,22 @@ const Renderer = {
   },
 
   /*
-   * Fog: a flat haze over the lot, and a few banks of it drifting through. Baked soft
-   * rather than drawn, because a circle at one alpha is a plate, not a cloud.
+   * Fog: a flat haze over the lot, and banks of it drifting through. Baked soft rather
+   * than drawn, because a circle at one alpha is a plate, not a cloud.
+   *
+   * Most of the thickness is in the wash rather than in the banks, and that is deliberate.
+   * The wash is uniform, so it never stacks with itself: raising it makes the whole ground
+   * murkier without ever producing a patch you cannot see the ball through. Bank alpha
+   * stacks wherever two of them overlap, so it is the number that has to stay modest —
+   * readability before decoration, and the ball is drawn under all of this.
    */
   FOG: {
-    wash: 0.17,
-    banks: 8,
-    sizeMin: 220,
-    sizeMax: 460,
+    wash: 0.38,
+    banks: 11,
+    sizeMin: 260,
+    sizeMax: 580,
     alphaMin: 0.14,
-    alphaMax: 0.3,
+    alphaMax: 0.26,
     crossMsMin: 24000,
     crossMsMax: 46000,
     rings: 14,               // how many steps the soft edge is baked in

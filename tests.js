@@ -3366,7 +3366,8 @@ const DrunkTests = (() => {
       const wasSkin = Renderer.activeSkin;
       Renderer.applySkin('classic');
       const P = CONFIG.PITCH;
-      const g = startMatch('two');
+      // In the sun, because rain has its own say on the drag and this is about the ground.
+      const g = matchInWeather('sunny');
       const torn = g.tearPitch(P.centreX, P.centreY);
       const drag = g.ballDragNow();
       Renderer.applySkin(wasSkin);
@@ -3564,6 +3565,57 @@ const DrunkTests = (() => {
           && parts.every((o) => o.depth < Renderer.DEPTH.hud),
         detail: parts.length + ' pieces of fog, all under the HUD, and the ball drags at '
           + g.ballDragNow() + ' as it does in the sun',
+      };
+    });
+    check('the fog is thick enough to be fog and thin enough to play through', () => {
+      /*
+       * Readability before decoration, and the fog is drawn over the players and the ball.
+       * So what matters is not how thick one bank is, it is how thick the worst stack of
+       * them gets: the flat wash plus every bank overlapping that spot, composited the way
+       * they are actually composited, each weighted by its own baked softness rather than
+       * counted at full strength across its whole width.
+       *
+       * The wash deliberately carries most of the murk, because a wash cannot stack with
+       * itself. Bank alpha is the number that has to stay modest, and this is what stops
+       * somebody raising it until the ball disappears into a patch.
+       */
+      const F = Renderer.FOG;
+      const P = CONFIG.PITCH;
+      const wasSkin = Renderer.activeSkin;
+      Renderer.applySkin('classic');
+
+      // How a bank fades from its middle outwards, read off the baked texture.
+      const mid = 64;
+      const falloff = [];
+      for (let i = 0; i <= 20; i += 1) {
+        const px = window.game.textures.getPixel(
+          mid + Math.round((i / 20) * (mid - 2)), mid, 'fogbank');
+        falloff.push(px ? px.alpha / 255 : 0);
+      }
+
+      let worst = 0;
+      for (let run = 0; run < 4; run += 1) {
+        const g = matchInWeather('foggy');
+        const banks = (g.fog || []).slice(1);      // [0] is the flat wash over everything
+        for (let x = P.left; x <= P.right; x += 40) {
+          for (let y = P.top; y <= P.bottom; y += 40) {
+            let clear = 1 - F.wash;
+            banks.forEach((bank) => {
+              const dx = (x - bank.x) / (bank.displayWidth / 2);
+              const dy = (y - bank.y) / (bank.displayHeight / 2);
+              const out = Math.sqrt(dx * dx + dy * dy);
+              if (out <= 1) clear *= 1 - bank.alpha * falloff[Math.round(out * 20)];
+            });
+            worst = Math.max(worst, 1 - clear);
+          }
+        }
+      }
+      Renderer.applySkin(wasSkin);
+      return {
+        pass: worst > F.wash && worst < 0.75 && falloff[0] > falloff[20],
+        detail: 'a wash of ' + F.wash + ' under ' + F.banks + ' banks that fade from '
+          + falloff[0].toFixed(2) + ' to ' + falloff[20].toFixed(2) + ', thickest anywhere '
+          + 'on the pitch ' + worst.toFixed(2) + ' of full white',
       };
     });
     check('what is coming down is on the screen, falling, and new every match', () => {
