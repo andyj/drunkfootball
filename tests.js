@@ -137,6 +137,18 @@ const DrunkTests = (() => {
   }
 
   /* Called by the page before run(), because a promise cannot be waited for inside one. */
+  /*
+   * The game's own page, fetched once so a check can read what it tells a phone. The suite
+   * runs from tests.html, which is a different page with different tags.
+   */
+  function readIndex() {
+    if (!window.fetch) return Promise.resolve();
+    return window.fetch('index.html')
+      .then((r) => r.text())
+      .then((html) => { window.INDEX_HTML = html; })
+      .catch(() => { window.INDEX_HTML = ''; });
+  }
+
   function listen() {
     if (!window.OfflineAudioContext) return Promise.resolve();
     const loud = Sound.STEPS;
@@ -2782,6 +2794,138 @@ const DrunkTests = (() => {
       };
     });
 
+    group('fullscreen');
+
+    /*
+     * None of these can ask for fullscreen for real: a browser only grants it inside a
+     * genuine gesture and refuses a synthetic one, and a suite that took over the whole
+     * screen halfway through would be its own problem. So what is checked is the policy —
+     * when it asks, how often, and that it never throws where it cannot be granted.
+     */
+    function withTouchBoot(run) {
+      const F = Renderer.FULLSCREEN;
+      const scale = window.game.scale;
+      const was = { onTouch: F.onTouch, asked: F.asked, start: scale.startFullscreen };
+      F.onTouch = true;
+      F.asked = false;
+      /*
+       * And the real thing is taken away for the duration. A suite that actually took the
+       * whole screen would be its own problem, and asking a desktop browser for fullscreen
+       * from a synthetic tap froze the page hard enough to need the tab killed.
+       */
+      scale.startFullscreen = () => { F.stubCalls = (F.stubCalls || 0) + 1; };
+      try {
+        return run();
+      } finally {
+        F.onTouch = was.onTouch;
+        F.asked = was.asked;
+        scale.startFullscreen = was.start;
+      }
+    }
+
+    check('a phone is asked for the whole screen, a desktop is not', () => {
+      /*
+       * The device rather than the setting: somebody who has forced the thumb controls on
+       * at a desk is still at a desk. This is checked because it was wrong, and being
+       * wrong meant every synthetic tap in this suite asked a desktop Chrome to go
+       * fullscreen, which froze the page solid.
+       */
+      const F = Renderer.FULLSCREEN;
+      return withTouchBoot(() => {
+        const scene = sceneByKey('Menu');
+        F.onTouch = false;
+        const onDesktop = Renderer.armFullscreen(scene);
+        F.onTouch = true;
+        const onPhone = Renderer.armFullscreen(scene);
+        scene.input.emit('pointerdown');       // consume it, with the real call stubbed
+        return {
+          pass: onDesktop === false && onPhone === true,
+          detail: 'armed on a phone: ' + onPhone + ', on a desktop: ' + onDesktop,
+        };
+      });
+    });
+    check('it is asked for once a load, not on every tap', () => {
+      /*
+       * Somebody who leaves fullscreen with the browser's own swipe must not be dragged
+       * back into it by their next tap. One ask a load, granted or not.
+       */
+      return withTouchBoot(() => {
+        const scene = sceneByKey('Menu');
+        const before = Renderer.wantsFullscreen(scene);
+        Renderer.armFullscreen(scene);
+        scene.input.emit('pointerdown');          // the first tap, which asks
+        const after = Renderer.wantsFullscreen(scene);
+        return {
+          pass: after === false,
+          detail: 'wanted before the first ask: ' + before + ', after it: ' + after,
+        };
+      });
+    });
+    check('a browser with no fullscreen at all is not asked twice', () => {
+      // An iPhone has no Fullscreen API. Asking must be a no-op there, not an exception.
+      return withTouchBoot(() => {
+        const scene = sceneByKey('Menu');
+        const real = scene.scale.fullscreen;
+        let threw = null;
+        let wanted = null;
+        try {
+          scene.scale.fullscreen = { available: false };
+          wanted = Renderer.wantsFullscreen(scene);
+          Renderer.armFullscreen(scene);
+          scene.input.emit('pointerdown');        // the tap that would have asked
+        } catch (err) {
+          threw = err.message;
+        } finally {
+          scene.scale.fullscreen = real;
+        }
+        return {
+          pass: wanted === false && threw === null,
+          detail: threw ? 'it threw: ' + threw
+            : 'no fullscreen available, so nothing was asked and nothing broke',
+        };
+      });
+    });
+    check('the tap that asks is a real one, and it is armed on every screen', () => {
+      /*
+       * The ask has to ride a gesture, so it hangs off a pointerdown rather than firing
+       * when a scene opens. Every screen arms it, because the first tap of a session might
+       * land on any of them.
+       */
+      return withTouchBoot(() => {
+        const scene = startMatch('two');
+        const armed = Renderer.armFullscreen(scene);
+        let asked = 0;
+        const real = scene.scale.startFullscreen;
+        scene.scale.startFullscreen = () => { asked += 1; };
+        try {
+          scene.input.emit('pointerdown');
+          scene.input.emit('pointerdown');       // and again: still only one ask
+        } finally {
+          scene.scale.startFullscreen = real;
+        }
+        return {
+          pass: armed === true && asked <= 1,
+          detail: 'armed ' + armed + ', and two taps asked ' + asked + ' time(s)',
+        };
+      });
+    });
+    check('the page tells a phone it can be a home screen app', () => {
+      // The way round an iPhone, which has no Fullscreen API to grant: launched from the
+      // home screen there is no browser furniture to be inside of.
+      const wanted = ['mobile-web-app-capable', 'apple-mobile-web-app-capable',
+        'apple-mobile-web-app-status-bar-style', 'theme-color'];
+      // The suite runs from tests.html, so the game's own page is fetched and read.
+      const html = window.INDEX_HTML || '';
+      const missing = wanted.filter((name) => html.indexOf('name="' + name + '"') === -1);
+      const cover = html.indexOf('viewport-fit=cover') !== -1;
+      return {
+        pass: html.length > 0 && missing.length === 0 && cover,
+        detail: !html ? 'index.html was not read'
+          : missing.length ? 'missing ' + missing.join(', ')
+            : wanted.length + ' tags present, and the viewport covers the notch',
+      };
+    });
+
     group('the crowd');
 
     check('they all go up when somebody scores', () => {
@@ -3943,7 +4087,13 @@ const DrunkTests = (() => {
     });
   }
 
-  return { run: runAll, listen, stage, resume, results: () => results.slice() };
+  return {
+    run: runAll,
+    listen: () => Promise.all([listen(), readIndex()]),
+    stage,
+    resume,
+    results: () => results.slice(),
+  };
 })();
 
 window.DrunkTests = DrunkTests;

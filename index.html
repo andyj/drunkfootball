@@ -2,8 +2,20 @@
 <html lang="en-GB">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Drunk Football</title>
+  <!--
+    Fullscreen on a phone is asked for on the first tap, but an iPhone will not grant it:
+    Safari has no Fullscreen API there at all. These are the way round it. Added to the
+    home screen, the game launches with no browser furniture at all, which is the same
+    thing by a different route, and the status bar is told to sit over the game's own black
+    rather than painting a white strip above it.
+  -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Drunk Football">
+  <meta name="theme-color" content="#101319">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Bangers&display=swap" rel="stylesheet">

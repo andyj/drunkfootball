@@ -2552,6 +2552,19 @@ if (touchWanted() || wideFrameAsked()) {
 }
 
 /*
+ * And whether to ask for the whole screen. The device, not the setting: somebody who has
+ * forced the thumb controls on at a desk is still at a desk, and their window is already
+ * the size they chose. A phone is the only place the browser's own furniture is worth
+ * asking to get rid of.
+ *
+ * That distinction is not pedantry. Keyed off the setting, this asked a desktop browser
+ * for fullscreen on the first click of every run in which the touch controls had been
+ * left on — including, once, every run of the test suite, whose synthetic taps froze the
+ * page solid.
+ */
+Renderer.FULLSCREEN.onTouch = deviceIsTouch();
+
+/*
  * The canvas is built at a multiple of the game's own size and every camera zooms to
  * match, so the picture is drawn near the display's real resolution while game
  * coordinates stay the world's own throughout.

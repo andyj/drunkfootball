@@ -1116,10 +1116,47 @@ const Renderer = {
    * possession ring was held that way and came back pointing at a destroyed sprite, which
    * simply never appeared again.
    */
+  /*
+   * Fullscreen, which on a handset is the difference between a pitch and a letterbox: the
+   * browser's own furniture eats a third of the screen on a phone held sideways.
+   *
+   * onTouch is set once at boot, because whether this is a phone is the match's question
+   * and not this file's. asked latches after the first attempt: a browser only grants
+   * fullscreen inside a gesture, so it is hung off the first tap, and somebody who leaves
+   * with the browser's own swipe should not be dragged back in by their next one.
+   */
+  FULLSCREEN: { onTouch: false, asked: false },
+
+  wantsFullscreen(scene) {
+    const F = Renderer.FULLSCREEN;
+    const scale = scene.scale;
+    return F.onTouch && !F.asked
+      && !!scale && !!scale.fullscreen && !!scale.fullscreen.available
+      && !scale.isFullscreen;
+  },
+
+  /*
+   * Armed on every screen, fired by the first tap that lands anywhere on it. Returns
+   * whether it armed, which is the part worth checking: whether the browser then grants it
+   * is the browser's business and it is entitled to say no.
+   */
+  armFullscreen(scene) {
+    if (!Renderer.FULLSCREEN.onTouch) return false;
+    scene.input.once('pointerdown', () => {
+      if (!Renderer.wantsFullscreen(scene)) return;
+      Renderer.FULLSCREEN.asked = true;
+      try {
+        scene.scale.startFullscreen();
+      } catch (err) { /* a browser that says no is a browser that says no */ }
+    });
+    return true;
+  },
+
   beginScene(scene) {
     scene.juiceState = null;
     Renderer.makeTextures(scene);
     Renderer.frameCamera(scene);
+    Renderer.armFullscreen(scene);
   },
 
   /*
