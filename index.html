@@ -16,12 +16,28 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Drunk Football">
   <meta name="theme-color" content="#101319">
+  <!--
+    Without an apple-touch-icon iOS uses a screenshot of the page as the home screen
+    icon, so the thing this whole route exists for arrives looking like a mistake.
+  -->
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icon-180.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Bangers&display=swap" rel="stylesheet">
   <style>
     html, body { margin: 0; padding: 0; height: 100%; background: #101319; }
-    body { display: flex; align-items: center; justify-content: center; overflow: hidden; }
+    body {
+      display: flex; align-items: center; justify-content: center; overflow: hidden;
+      /*
+       * Launched from the home screen the page owns the whole display, island and
+       * home bar included. Insetting by the safe area keeps the pitch out from under
+       * them; in a browser tab every inset is 0 and this changes nothing.
+       */
+      box-sizing: border-box;
+      padding: env(safe-area-inset-top) env(safe-area-inset-right)
+               env(safe-area-inset-bottom) env(safe-area-inset-left);
+    }
     canvas { display: block; }
 
     /*
@@ -49,10 +65,15 @@
     }
     #rotate .quiet { color: #9aa4b2; font-size: 15px; }
 
-    @keyframes tip {
-      0%, 40% { transform: rotate(0deg); }
-      60%, 100% { transform: rotate(-90deg); }
-    }
+    /*
+     * iOS exposes no way to go fullscreen from script, so the only person who can do
+     * it is the reader, through Safari's share sheet. This is the moment to say so:
+     * a phone is held upright when the game is opened, so this card is already in
+     * front of them, and unlike an overlay on the game it covers nothing.
+     */
+    #install { display: none; margin-top: 6px; font-size: 14px; color: #9aa4b2; }
+    #install b { color: #ffd166; font-weight: 600; }
+    body.can-install #install { display: block; }
 
     /* Coarse pointer only, so a narrow desktop window is left alone. */
     @media (orientation: portrait) and (pointer: coarse) {
@@ -67,7 +88,22 @@
     <div class="phone"></div>
     <div class="shout">TURN YOUR PHONE SIDEWAYS</div>
     <div class="quiet">the pitch is wider than it is tall, and so are you by now</div>
+    <div id="install">
+      <b>Share &rarr; Add to Home Screen</b><br>and the browser gets out of the way
+    </div>
   </div>
+  <script>
+    /*
+     * navigator.standalone is the iOS answer, display-mode covers Android. Either
+     * way, once it is installed the advice is wrong and must not be shown.
+     */
+    (function () {
+      var installed = window.navigator.standalone === true
+        || matchMedia('(display-mode: standalone)').matches
+        || matchMedia('(display-mode: fullscreen)').matches;
+      if (!installed) document.body.classList.add('can-install');
+    }());
+  </script>
   <!-- Arcade-only Phaser build: everything this game uses, a fraction of the full bundle. -->
   <script src="https://cdn.jsdelivr.net/npm/phaser@4.2.1/dist/phaser-arcade-physics.min.js"></script>
   <script src="audio.js"></script>
