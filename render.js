@@ -79,6 +79,10 @@ const Renderer = {
     keeperRed: 0xf08e90,
     keeperBlue: 0x94bcff,
     outline: 0x12161c,
+    shortsRed: 0xf5f2e6,
+    shortsBlue: 0x1c2f52,
+    boot: 0x1f242c,
+    glove: 0xffe29a,
   },
 
   /*
@@ -600,6 +604,35 @@ const Renderer = {
     armWidth: 5,
   },
 
+  /*
+   * The people inside the kits. Drawn with the chunky shaded look of the old Bitmap
+   * Brothers games: every piece a dome with a dark rim, a lit middle and a glint on top,
+   * so a player reads as something solid rather than a counter.
+   *
+   * Skin and hair are the one place colour is not taken from the skin's seven. A skin
+   * repaints the kit and the ground, it does not repaint the people wearing it.
+   *
+   * The art is baked at artScale times its size and drawn back down, so it stays sharp on
+   * a canvas that is itself drawn several times over. The physics body underneath is
+   * untouched: the picture is a separate image that follows it about.
+   */
+  KIT: {
+    artScale: 2,              // at least this, or the render scale if that is bigger
+    size: 52,                 // px square an outfield player is drawn in
+    strideFrames: 8,
+    stridePx: 36,             // ground covered in one full stride, both feet
+    strideReach: 11,          // how far a boot swings ahead of and behind the hips
+    runningAbove: 0.4,        // px moved in a frame that counts as moving at all
+    shoulderTwistDeg: 7,      // the shoulders swing against the legs when he runs
+    shadow: { x: 3, y: 5, alpha: 0.42 },
+    people: {
+      red: { skin: 0xe2ad86, hair: 0x3a2414 },
+      blue: { skin: 0x8a5838, hair: 0x15100d },
+      keeperRed: { skin: 0xf0c6a0, hair: 0xc4782e },
+      keeperBlue: { skin: 0xc68b62, hair: 0x2b1d14 },
+    },
+  },
+
   DEPTH: {
     pitch: 0, wall: 5, keeper: 10, player: 20, ball: 30,
     label: 40, hud: 50, overlay: 60,
@@ -795,6 +828,13 @@ const Renderer = {
     P.keeperRed = Renderer.lighten(T.redTeam, 0.45);
     P.keeperBlue = Renderer.lighten(T.blueTeam, 0.45);
 
+    // Red in white shorts, blue in dark ones, so the two kits differ in more than the
+    // shirt. Boots come off the black, keeper's gloves off the lager.
+    P.shortsRed = T.chalkWhite;
+    P.shortsBlue = Renderer.mix(T.blueTeam, T.nightBlack, 0.6);
+    P.boot = Renderer.lighten(T.nightBlack, 0.08);
+    P.glove = Renderer.lighten(T.lagerYellow, 0.3);
+
     // The net sits just off the surround, or the goal mouth disappears into it.
     P.net = Renderer.lighten(T.nightBlack, 0.14);
 
@@ -822,7 +862,10 @@ const Renderer = {
   PALETTE_DEPENDENT_TEXTURES: [
     'player_red', 'player_blue', 'keeper_red', 'keeper_blue', 'ball', 'referee', 'flake',
     'hand_red', 'hand_blue', 'raindrop', 'gust', 'fogbank',
-  ],
+  // Every stride frame of both kits. Eight is KIT.strideFrames, which a literal cannot
+  // reach from in here.
+  ].concat(['red', 'blue'].flatMap((team) => Array.from({ length: 8 },
+    (_, i) => 'player_' + team + '_run' + i))),
   paletteVersion: 0,
   bakedVersion: -1,
 
@@ -862,40 +905,7 @@ const Renderer = {
       g.fillRect(0, 0, 1, 1);
     });
 
-    // Player: body circle plus a chunky nose so facing reads at a glance. The sprite
-    // is rotated to the facing angle, so the nose is drawn pointing right (angle 0).
-    const r = CONFIG.PLAYER.radius;
-    const nose = 12;
-    const pw = r * 2 + nose;
-    const ph = r * 2;
-    const player = (key, fill) => bake(key, pw, ph, () => {
-      g.fillStyle(fill, 1);
-      g.lineStyle(3, P.outline, 1);
-      g.beginPath();
-      g.moveTo(r * 1.6, r - 9);
-      g.lineTo(pw - 2, r);
-      g.lineTo(r * 1.6, r + 9);
-      g.closePath();
-      g.fillPath();
-      g.strokePath();
-      g.fillCircle(r, r, r - 2);
-      g.strokeCircle(r, r, r - 2);
-    });
-    player('player_red', P.red);
-    player('player_blue', P.blue);
-
-    // A fist, in a lighter shade of the kit so it reads as a hand rather than as more
-    // player. Its own texture because what a hand does is move: these are not baked into
-    // the body, they are carried about by it.
-    const H = Renderer.HANDS;
-    const hand = (key, fill) => bake(key, H.radius * 2, H.radius * 2, () => {
-      g.fillStyle(Renderer.lighten(fill, 0.4), 1);
-      g.lineStyle(2, P.outline, 1);
-      g.fillCircle(H.radius, H.radius, H.radius - 1);
-      g.strokeCircle(H.radius, H.radius, H.radius - 1);
-    });
-    hand('hand_red', P.red);
-    hand('hand_blue', P.blue);
+    Renderer.bakeKit(g, bake);
 
     // A supporter, seen from above: a blob. Baked white so each one can be tinted into
     // its own coat without a texture per colour.
@@ -1014,6 +1024,9 @@ const Renderer = {
     });
     falloff('light_pool', 256, 48, 0.02);
     falloff('soft_shadow', 64, 14, 0.11);
+    // The same falloff under everybody's feet in daylight. Its own key, so it is never
+    // mistaken for one of the tower shadows the floodlit ground throws.
+    falloff('foot_shadow', 64, 14, 0.11);
 
     /*
      * The thumb controls, baked once at a size nothing asks to be drawn bigger than, so
@@ -1040,39 +1053,248 @@ const Renderer = {
       g.strokeCircle(br, br, br - 1);
     });
 
-    /*
-     * Keeper: a circle with both hands spread along the goal line, which is what a keeper
-     * is doing when you look at him from above. He was a slab, and a slab is the one shape
-     * that says nothing about what it is for.
-     *
-     * The texture is a shade wider than the body the match is tuned around, so createKeeper
-     * puts the body back to the slab's own size afterwards. Four pixels of glove either
-     * side of a save is not worth re-measuring every save rate in the file for.
-     */
-    const kh = CONFIG.KEEPER.height;
-    const K = Renderer.KEEPER_ART;
-    const keeper = (key, fill) => bake(key, K.radius * 2, kh, () => {
-      const cx = K.radius;
-      const cy = kh / 2;
-      const reach = kh / 2 - K.handRadius;
-
-      // Arms first, so the body and the gloves are drawn over the ends of them.
-      g.lineStyle(K.armWidth, P.outline, 1);
-      g.lineBetween(cx, cy - reach, cx, cy + reach);
-
-      g.fillStyle(fill, 1);
-      g.lineStyle(3, P.outline, 1);
-      g.fillCircle(cx, cy, K.radius - 2);
-      g.strokeCircle(cx, cy, K.radius - 2);
-      [-1, 1].forEach((side) => {
-        g.fillCircle(cx, cy + side * reach, K.handRadius - 1);
-        g.strokeCircle(cx, cy + side * reach, K.handRadius - 1);
-      });
-    });
-    keeper('keeper_red', P.keeperRed);
-    keeper('keeper_blue', P.keeperBlue);
 
     g.destroy();
+  },
+
+  /* -------------------------------------------------------------- the kits */
+
+  artScale() {
+    return Math.max(Renderer.KIT.artScale, Renderer.RENDER_SCALE);
+  },
+
+  runFrameKey(team, i) {
+    return 'player_' + team + '_run' + i;
+  },
+
+  /*
+   * The one shape everything on a player is made of. A dark rim, the colour itself, a lit
+   * middle and a glint, stacked from the outside in. The light sits a little ahead of the
+   * middle rather than off to one side, because the whole player turns and a fixed sun
+   * would swing round with him.
+   */
+  dome(g, x, y, rx, ry, colour) {
+    g.fillStyle(Renderer.PALETTE.outline, 1);
+    g.fillEllipse(x, y, (rx + 1.2) * 2, (ry + 1.2) * 2);
+    g.fillStyle(Renderer.darken(colour, 0.34), 1);
+    g.fillEllipse(x, y, rx * 2, ry * 2);
+    g.fillStyle(colour, 1);
+    g.fillEllipse(x + rx * 0.06, y - ry * 0.05, rx * 1.66, ry * 1.66);
+    g.fillStyle(Renderer.lighten(colour, 0.2), 1);
+    g.fillEllipse(x + rx * 0.14, y - ry * 0.14, rx * 0.96, ry * 0.96);
+    g.fillStyle(Renderer.lighten(colour, 0.6), 0.85);
+    g.fillEllipse(x + rx * 0.24, y - ry * 0.3, rx * 0.36, ry * 0.3);
+  },
+
+  /* A leg seen from above: a sock from the hip to the boot, and the boot on the end. */
+  leg(g, hipX, footX, y, sock) {
+    const P = Renderer.PALETTE;
+    if (Math.abs(footX - hipX) > 0.5) {
+      g.lineStyle(7, P.outline, 1);
+      g.lineBetween(hipX, y, footX, y);
+      g.lineStyle(4.6, sock, 1);
+      g.lineBetween(hipX, y, footX, y);
+    }
+    Renderer.dome(g, footX + 2.5, y, 5, 3.1, P.boot);
+    // The turnover at the top of the boot, which is what makes it a sock.
+    g.lineStyle(1.6, P.line, 1);
+    g.lineBetween(footX - 1.4, y - 2.2, footX - 1.4, y + 2.2);
+  },
+
+  /*
+   * A head from above is mostly hair. The face shows as a crescent at the front, with
+   * the ears either side and the tip of the nose just past the rim.
+   */
+  head(g, x, y, who) {
+    const P = Renderer.PALETTE;
+    [-1, 1].forEach((side) => {
+      g.fillStyle(P.outline, 1);
+      g.fillCircle(x + 0.6, y + side * 5.5, 2.1);
+      g.fillStyle(who.skin, 1);
+      g.fillCircle(x + 0.6, y + side * 5.5, 1.3);
+    });
+    g.fillStyle(P.outline, 1);
+    g.fillCircle(x + 5.9, y, 1.9);
+    g.fillStyle(who.skin, 1);
+    g.fillCircle(x + 5.9, y, 1.2);
+    Renderer.dome(g, x, y, 5.4, 5.4, who.skin);
+    g.fillStyle(Renderer.darken(who.hair, 0.25), 1);
+    g.fillEllipse(x - 1.3, y, 9.2, 10.6);
+    g.fillStyle(who.hair, 1);
+    g.fillEllipse(x - 1.1, y - 0.3, 7.6, 9);
+    g.fillStyle(Renderer.lighten(who.hair, 0.35), 0.8);
+    g.fillEllipse(x - 0.6, y - 2, 3.6, 2);
+  },
+
+  /* The collar, a ring of white round the neck that the head sits in. */
+  collar(g, x, y) {
+    const P = Renderer.PALETTE;
+    g.fillStyle(P.outline, 1);
+    g.fillCircle(x, y, 7.3);
+    g.fillStyle(P.line, 1);
+    g.fillCircle(x, y, 6.5);
+  },
+
+  /*
+   * An outfield player, drawn facing right in a KIT.size square about his middle. phase
+   * is where he is in his stride, in radians, or null for stood still. The feet go one
+   * forward as the other goes back, and the shoulders twist the other way to the legs,
+   * which is most of what makes a top-down figure look as if it is running.
+   */
+  drawOutfield(g, team, phase) {
+    const K = Renderer.KIT;
+    const P = Renderer.PALETTE;
+    const shirt = team === 'red' ? P.red : P.blue;
+    const shorts = team === 'red' ? P.shortsRed : P.shortsBlue;
+    const who = K.people[team];
+    const running = phase !== null;
+    const twist = running ? Math.sin(phase) * Phaser.Math.DegToRad(K.shoulderTwistDeg) : 0;
+
+    g.save();
+    g.translateCanvas(K.size / 2, K.size / 2);
+
+    [-1, 1].forEach((side) => {
+      // Stood still, both toes point the way he is facing, which is the kick direction.
+      const foot = running ? -side * Math.sin(phase) * K.strideReach : 6;
+      Renderer.leg(g, -1, foot, side * 5.5, shirt);
+    });
+    Renderer.dome(g, -3, 0, 6, 9.5, shorts);
+
+    g.save();
+    g.rotateCanvas(twist);
+    [-1, 1].forEach((side) => {
+      Renderer.dome(g, 1, side * 13, 4.2, 4, shirt);
+    });
+    Renderer.dome(g, -0.5, 0, 8.5, 14.2, shirt);
+    // Piping along the shoulder seams, in the kit's own lighter shade.
+    g.lineStyle(1.5, Renderer.lighten(shirt, 0.55), 0.9);
+    [-1, 1].forEach((side) => g.lineBetween(-1, side * 7, 1.5, side * 12.5));
+    Renderer.collar(g, 1.5, 0);
+    Renderer.head(g, 1.5, 0, who);
+    g.restore();
+
+    g.restore();
+  },
+
+  /*
+   * A keeper, drawn facing right: stood square on the line with his arms out along it and
+   * a glove on the end of each. Same footprint as the old slab, so the save rates do not
+   * notice he has been redrawn.
+   */
+  drawKeeper(g, team) {
+    const P = Renderer.PALETTE;
+    const KA = Renderer.KEEPER_ART;
+    const shirt = team === 'red' ? P.keeperRed : P.keeperBlue;
+    const who = Renderer.KIT.people[team === 'red' ? 'keeperRed' : 'keeperBlue'];
+
+    g.save();
+    g.translateCanvas(KA.radius, CONFIG.KEEPER.height / 2);
+    [-1, 1].forEach((side) => Renderer.leg(g, -1, 3, side * 5, shirt));
+    [-1, 1].forEach((side) => {
+      g.lineStyle(7, P.outline, 1);
+      g.lineBetween(0, side * 9, 1.5, side * 17);
+      g.lineStyle(4.6, Renderer.darken(shirt, 0.1), 1);
+      g.lineBetween(0, side * 9, 1.5, side * 17);
+      Renderer.dome(g, 2, side * 17.8, 4.6, 4.6, P.glove);
+    });
+    Renderer.dome(g, -0.5, 0, 7.5, 11.5, shirt);
+    Renderer.collar(g, 1.5, 0);
+    Renderer.head(g, 1.5, 0, who);
+    g.restore();
+  },
+
+  /*
+   * Everything that makes up a player's look. The physics bodies get empty textures the
+   * exact size the old shapes were, so the body offsets and every collision tuned
+   * against them are untouched, and the art is drawn over the top by dress().
+   */
+  bakeKit(g, bake) {
+    const K = Renderer.KIT;
+    const A = Renderer.artScale();
+    const art = (key, w, h, draw) => bake(key, Math.round(w * A), Math.round(h * A), () => {
+      g.save();
+      g.scaleCanvas(A, A);
+      draw();
+      g.restore();
+    });
+
+    const r = CONFIG.PLAYER.radius;
+    bake('player_body', r * 2 + 12, r * 2, () => {});
+    bake('keeper_body', Renderer.KEEPER_ART.radius * 2, CONFIG.KEEPER.height, () => {});
+
+    ['red', 'blue'].forEach((team) => {
+      art('player_' + team, K.size, K.size, () => Renderer.drawOutfield(g, team, null));
+      for (let i = 0; i < K.strideFrames; i += 1) {
+        const phase = (i / K.strideFrames) * Math.PI * 2;
+        art(Renderer.runFrameKey(team, i), K.size, K.size,
+          () => Renderer.drawOutfield(g, team, phase));
+      }
+
+      // A fist, bare, since nobody plays in gloves but the keeper.
+      const H = Renderer.HANDS;
+      art('hand_' + team, H.radius * 2, H.radius * 2,
+        () => Renderer.dome(g, H.radius, H.radius, H.radius - 1.6, H.radius - 1.6,
+          K.people[team].skin));
+
+      art('keeper_' + team, Renderer.KEEPER_ART.radius * 2, CONFIG.KEEPER.height,
+        () => Renderer.drawKeeper(g, team));
+    });
+  },
+
+  /*
+   * Puts the art on a physics sprite. The sprite itself is invisible and does the playing;
+   * the art copies where it is, how it is turned, squashed and faded every frame, after
+   * physics and tweens have had their say, so a kick pulse or a faceplant lands on the
+   * picture without anything else knowing the picture is separate.
+   *
+   * frames, for an outfield player, picks a stride frame from how far he has actually
+   * moved rather than from his velocity, so the walk out of the tunnel, with physics off,
+   * still has him walking. extras are more images that should fade with him.
+   */
+  dress(scene, sprite, art, frames, extras) {
+    const K = Renderer.KIT;
+    const A = Renderer.artScale();
+    const shadow = Renderer.skinHasLights() ? null
+      : scene.add.image(sprite.x, sprite.y, 'foot_shadow')
+        .setDisplaySize(sprite.body.width + 10, sprite.body.height + 6)
+        .setTint(Renderer.THEME.nightBlack)
+        .setDepth(Renderer.DEPTH.wall + 1);
+    art.setScale(1 / A);
+
+    let lastX = sprite.x;
+    let lastY = sprite.y;
+    let stride = 0;
+    const sync = () => {
+      if (!sprite.active || !art.active) return;
+      if (frames) {
+        const moved = Phaser.Math.Distance.Between(lastX, lastY, sprite.x, sprite.y);
+        // A reset to the kickoff spot is a teleport, not a stride.
+        if (moved < CONFIG.PLAYER.radius) stride += moved;
+        const n = frames.run.length;
+        const key = moved > K.runningAbove && moved < CONFIG.PLAYER.radius
+          ? frames.run[Math.floor((stride / K.stridePx) * n) % n] : frames.stand;
+        if (art.texture.key !== key) art.setTexture(key);
+      }
+      lastX = sprite.x;
+      lastY = sprite.y;
+      art.setPosition(sprite.x, sprite.y)
+        .setRotation(sprite.rotation)
+        .setScale(sprite.scaleX / A, sprite.scaleY / A)
+        .setAlpha(sprite.alpha)
+        .setVisible(sprite.visible);
+      (extras || []).forEach((o) => o.setAlpha(sprite.alpha).setVisible(sprite.visible));
+      if (shadow) {
+        shadow.setPosition(sprite.x + K.shadow.x, sprite.y + K.shadow.y)
+          .setAlpha(K.shadow.alpha * sprite.alpha)
+          .setVisible(sprite.visible);
+      }
+    };
+    scene.events.on('postupdate', sync);
+    sprite.once('destroy', () => scene.events.off('postupdate', sync));
+    sync();
+    sprite.art = art;
+    sprite.shadow = shadow;
+    return sprite;
   },
 
   /* ------------------------------------------------------------ text util */
@@ -2735,7 +2957,7 @@ const Renderer = {
   /* ------------------------------------------------------- match entities */
 
   createPlayer(scene, x, y, team) {
-    const sprite = scene.physics.add.image(x, y, team === 'red' ? 'player_red' : 'player_blue');
+    const sprite = scene.physics.add.image(x, y, 'player_body');
     const r = CONFIG.PLAYER.radius;
     sprite.setOrigin(r / sprite.width, 0.5);
     sprite.body.setCircle(r, 0, 0);
@@ -2744,12 +2966,18 @@ const Renderer = {
     // torn down takes both, and nothing else has to know they exist.
     sprite.hands = [-1, 1].map((side) => {
       const glove = scene.add
-        .image(x, y, team === 'red' ? 'hand_red' : 'hand_blue')
+        .image(x, y, 'hand_' + team)
+        .setScale(1 / Renderer.artScale())
         .setDepth(Renderer.DEPTH.player + 1);
       glove.side = side;
       return glove;
     });
-    return sprite;
+    const frames = {
+      stand: 'player_' + team,
+      run: Array.from({ length: Renderer.KIT.strideFrames }, (_, i) => Renderer.runFrameKey(team, i)),
+    };
+    const art = scene.add.image(x, y, frames.stand).setDepth(Renderer.DEPTH.player);
+    return Renderer.dress(scene, sprite, art, frames, sprite.hands);
   },
 
   /*
@@ -2785,13 +3013,17 @@ const Renderer = {
   },
 
   createKeeper(scene, x, y, team) {
-    const sprite = scene.physics.add.image(x, y, team === 'red' ? 'keeper_red' : 'keeper_blue');
+    const sprite = scene.physics.add.image(x, y, 'keeper_body');
     // His gloves stick out past the slab the match was tuned around, and a glove is not
     // what stops a shot: the body stays the size every save rate in this game was measured
     // against, whatever he is drawn as.
     sprite.body.setSize(CONFIG.KEEPER.width, CONFIG.KEEPER.height, true);
     sprite.setDepth(Renderer.DEPTH.keeper);
-    return sprite;
+    // Drawn facing right, so the one in the right-hand goal is turned round to face play.
+    const art = scene.add.image(x, y, 'keeper_' + team)
+      .setFlipX(x > CONFIG.PITCH.centreX)
+      .setDepth(Renderer.DEPTH.keeper);
+    return Renderer.dress(scene, sprite, art, null, null);
   },
 
   /* ------------------------------------------------------------------ HUD */
@@ -3991,8 +4223,8 @@ const Renderer = {
     });
 
     const taker = scene.add.image(geom.spotX - geom.takerOffsetX, geom.spotY, 'player_red')
+      .setScale(1 / Renderer.artScale())
       .setDepth(Renderer.DEPTH.player);
-    taker.setOrigin(CONFIG.PLAYER.radius / taker.width, 0.5);
 
     const centredAt = (x, y, size, colour) =>
       Renderer.text(scene, x, y, '', size, colour).setOrigin(0.5).setDepth(Renderer.DEPTH.overlay);
@@ -4020,7 +4252,10 @@ const Renderer = {
     return {
       geom,
       taker,
+      // Facing out of the right-hand goal, at the taker.
       keeper: scene.add.image(geom.goalLineX - CONFIG.KEEPER.lineInset, geom.spotY, 'keeper_blue')
+        .setScale(1 / Renderer.artScale())
+        .setFlipX(true)
         .setDepth(Renderer.DEPTH.keeper),
       ball: scene.add.image(geom.spotX, geom.spotY, 'ball').setDepth(Renderer.DEPTH.ball),
       // Stacked above and below the centre circle, never across it.
@@ -4070,7 +4305,6 @@ const Renderer = {
   resetPenaltyKicker(view, team) {
     const geom = view.geom;
     view.taker.setTexture(team === 'red' ? 'player_red' : 'player_blue');
-    view.taker.setOrigin(CONFIG.PLAYER.radius / view.taker.width, 0.5);
     view.taker.setAngle(0).setPosition(geom.spotX - geom.takerOffsetX, geom.spotY);
     view.keeper.setTexture(team === 'red' ? 'keeper_blue' : 'keeper_red');
     view.keeper.setPosition(geom.goalLineX - CONFIG.KEEPER.lineInset, geom.spotY);
